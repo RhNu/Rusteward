@@ -1,0 +1,2 @@
+[alias]
+dev = ["run", "--locked", "--package", "rusteward", "--bin", "cargo-dev", "--"]

@@ -1,0 +1,50 @@
+[lints]
+all = "warn"
+pedantic = "warn"
+must_use_candidate = "allow"
+
+# Selected restriction rules require deliberate error handling and explicit intent.
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+as_pointer_underscore = "warn"
+as_underscore = "warn"
+clone_on_ref_ptr = "warn"
+dbg_macro = "warn"
+exit = "warn"
+let_underscore_must_use = "warn"
+lossy_float_literal = "warn"
+map_err_ignore = "warn"
+multiple_unsafe_ops_per_block = "warn"
+panic_in_result_fn = "warn"
+precedence_bits = "warn"
+suspicious_xor_used_as_pow = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "warn"
+unused_result_ok = "warn"
+unwrap_used = "warn"
+
+# Nursery rules are selected individually to avoid adopting the entire experimental group.
+as_ptr_cast_mut = "warn"
+clear_with_drain = "warn"
+coerce_container_to_any = "warn"
+collection_is_never_read = "warn"
+debug_assert_with_mut_call = "warn"
+derive_partial_eq_without_eq = "warn"
+fallible_impl_from = "warn"
+literal_string_with_formatting_args = "warn"
+needless_collect = "warn"
+path_buf_push_overwrite = "warn"
+read_zero_byte_vec = "warn"
+redundant_clone = "warn"
+search_is_some = "warn"
+suspicious_operation_groupings = "warn"
+trait_duplication_in_bounds = "warn"
+type_repetition_in_bounds = "warn"
+unused_peekable = "warn"
+unused_rounding = "warn"
+use_self = "warn"
+
+[config]
+allow-unwrap-in-tests = true
+allow-unwrap-in-consts = false
