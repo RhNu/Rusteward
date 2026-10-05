@@ -359,6 +359,10 @@ active toolchain. `[format].spacing` controls declaration spacing.
 and all targets, keep default features, and leave custom warnings nonfatal. The Clippy toolchain can
 be selected independently of rustfmt.
 
+Clippy runs once with Cargo's `--keep-going`, so a failed crate does not stop checks of independent
+crates or targets. Targets that depend on a failed crate still cannot be checked, including when
+lint errors make a dependency fail. The selected lint levels and command failure policy still apply.
+
 The built-in profile enables `clippy::all` and `clippy::pedantic`, with `clippy::must_use_candidate`
 allowed. It also enables these individually selected rules; the `restriction` and `nursery` groups
 are not enabled wholesale:

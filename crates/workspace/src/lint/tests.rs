@@ -102,6 +102,7 @@ fn separates_cargo_selection_from_rustc_flags() {
     );
     let arguments: Vec<_> = invocation.get_args().map(OsString::from).collect();
     let separator = arguments.iter().position(|arg| arg == "--").unwrap();
+    assert!(arguments[..separator].contains(&OsString::from("--keep-going")));
     assert!(arguments[..separator].contains(&OsString::from("--message-format=json")));
     assert!(arguments[..separator].contains(&OsString::from("--color=never")));
     assert!(arguments[..separator].contains(&OsString::from("--all-features")));

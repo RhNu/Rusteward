@@ -30,6 +30,8 @@ pub fn command(
     let mut arguments: Vec<OsString> = [
         "clippy",
         "--workspace",
+        // Failed dependencies still block their dependents; continue independent targets.
+        "--keep-going",
         "--message-format=json",
         "--color=never",
         "--manifest-path",

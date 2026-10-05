@@ -171,6 +171,9 @@ configured group levels, individual lint levels, and user `clippy-args` follow i
 Group flags must precede individual lint overrides so a selected exception is not overwritten by its
 group. Cargo configuration continues to control the target platform and build environment.
 
+The single Cargo invocation includes `--keep-going` to continue independent compilation units after
+failures; units that depend on a failed unit remain blocked.
+
 Clippy runs with Cargo's JSON message format and color disabled. `lint::messages` is a pure decoder
 of captured stdout: it strictly validates recognized Cargo protocol records, collects compiler
 messages and the optional final build result, discards artifact/build-script records, and preserves
