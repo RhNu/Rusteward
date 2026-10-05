@@ -3,23 +3,18 @@
 mod args;
 mod output;
 
-use std::{
-    fs,
-    io::{IsTerminal, Write},
-    path::Path,
-    process::ExitCode,
-};
+use std::{fs, io::Write, path::Path, process::ExitCode};
 
 use anyhow::{Context, Result};
-use clap::Parser;
-use rusteward_workspace::{config, discovery, execution::Executor, format, lint, process};
+use rusteward_workspace::{config, discovery, execution::Executor, format, process, workflow};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use crate::args::{Cli, Command, ConfigCommand};
 
 fn main() -> ExitCode {
-    let cli = Cli::parse_from(args::normalize(std::env::args_os()));
+    let cli = args::parse(std::env::args_os()).unwrap_or_else(|error| error.exit());
+    let presentation = output::Presentation::detect(&cli);
     let default_filter = match cli.verbose {
         0 if cli.quiet => "off",
         0 => "warn",
@@ -28,16 +23,17 @@ fn main() -> ExitCode {
     };
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_ansi(std::io::stderr().is_terminal())
+        .with_ansi(presentation.color)
+        .without_time()
+        .with_target(cli.verbose > 1)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter)),
         )
         .init();
-    match run(&cli) {
-        Ok(false) => ExitCode::SUCCESS,
-        Ok(true) => ExitCode::from(1),
+    match run(&cli, presentation) {
+        Ok(code) => ExitCode::from(code),
         Err(error) => {
-            if let Err(write_error) = output::error(&cli, &error) {
+            if let Err(write_error) = output::error(&cli, &error, presentation) {
                 eprintln!("cargo dev: cannot write error output: {write_error:#}");
             }
             ExitCode::from(2)
@@ -45,15 +41,16 @@ fn main() -> ExitCode {
     }
 }
 
-/// Return whether completed checks failed; operational errors remain a separate result.
-fn run(cli: &Cli) -> Result<bool> {
+/// Completed workflows retain their report on failure; setup errors have no workflow report.
+fn run(cli: &Cli, presentation: output::Presentation) -> Result<u8> {
     if let Command::Config {
         command: ConfigCommand::Init { global: true },
     } = &cli.command
     {
         let path =
             config::user_path().context("cannot determine the user configuration directory")?;
-        return initialize(&path, cli);
+        initialize(&path, cli)?;
+        return Ok(0);
     }
     let cargo = process::CargoOptions {
         manifest_path: cli.manifest_path.clone(),
@@ -69,7 +66,8 @@ fn run(cli: &Cli) -> Result<bool> {
             .config
             .clone()
             .unwrap_or_else(|| workspace.root.join(config::FILE_NAME));
-        return initialize(&path, cli);
+        initialize(&path, cli)?;
+        return Ok(0);
     }
     let loaded = config::load(&workspace.root, cli.config.as_deref(), cli.no_config)?;
     let mut settings = loaded.settings;
@@ -93,47 +91,35 @@ fn run(cli: &Cli) -> Result<bool> {
                 toml::to_string_pretty(&settings)?
             )?;
         }
-        return Ok(false);
+        return Ok(0);
     }
     let sources = discovery::sources(&workspace, &settings.scan)?;
+    output::workspace(cli, &workspace.root, sources.len())?;
     let executor = Executor::new(&settings.execution, sources.len())?;
-    let report = match &cli.command {
-        Command::Format { check, diff } => format::run(
-            &workspace,
-            &sources,
-            &settings,
-            &executor,
-            format::Options {
-                check: *check,
-                diff: *diff,
-            },
-        )?,
-        Command::Lint => lint::run(&workspace, &sources, &settings, &executor, &cargo)?,
-        Command::Check { diff } => {
-            let mut report = format::run(
-                &workspace,
-                &sources,
-                &settings,
-                &executor,
-                format::Options {
-                    check: true,
-                    diff: *diff,
-                },
-            )?;
-            report.append(lint::run(
-                &workspace, &sources, &settings, &executor, &cargo,
-            )?);
-            report
-        },
+    let command = match &cli.command {
+        Command::Format { check, diff } => workflow::Command::Format(format::Options {
+            check: *check,
+            diff: *diff,
+        }),
+        Command::Lint => workflow::Command::Lint,
+        Command::Check { diff } => workflow::Command::Check { diff: *diff },
         Command::Config { .. } => unreachable!("configuration commands returned above"),
     };
-    let failed = report.failed(settings.lint.deny_warnings);
-    output::render(cli, &workspace.root, &report, failed)?;
-    Ok(failed)
+    let outcome = workflow::run(
+        &workspace,
+        &sources,
+        &settings,
+        &executor,
+        &cargo,
+        command,
+        &mut |event| output::progress(cli, event, presentation),
+    );
+    output::render(cli, &workspace.root, &outcome, presentation)?;
+    Ok(outcome.exit_code())
 }
 
 /// Never overwrite an existing configuration, including when the path is supplied explicitly.
-fn initialize(path: &Path, cli: &Cli) -> Result<bool> {
+fn initialize(path: &Path, cli: &Cli) -> Result<()> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -159,5 +145,5 @@ fn initialize(path: &Path, cli: &Cli) -> Result<bool> {
     } else if !cli.quiet {
         writeln!(std::io::stdout().lock(), "Created {}", path.display())?;
     }
-    Ok(false)
+    Ok(())
 }

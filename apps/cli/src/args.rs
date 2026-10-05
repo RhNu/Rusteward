@@ -3,9 +3,28 @@
 use std::{ffi::OsString, path::PathBuf};
 
 use anyhow::{Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use rusteward_core::diagnostic::Severity;
 use rusteward_workspace::config::{Settings, parse_rustfmt_override};
+
+/// Resolve terminal styling once without changing the underlying report.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum Color {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+impl Color {
+    pub const fn enabled(self, terminal: bool, no_color: bool) -> bool {
+        match self {
+            Self::Auto => terminal && !no_color,
+            Self::Always => true,
+            Self::Never => false,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[expect(
@@ -39,12 +58,15 @@ pub struct Cli {
     /// Print one versioned JSON result with structured diagnostics and separate child logs.
     #[arg(long, global = true)]
     pub json: bool,
-    /// Hide successful summaries; findings are still printed.
+    /// Hide progress and successful summaries; keep full diagnostics and failure context.
     #[arg(short, long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
-    /// Show full compiler diagnostics and workflow logs (-v); add per-file logs with -vv.
+    /// Include Cargo and workflow logs (-v); add per-file debug logs with -vv.
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
+    /// Style text output; auto disables color when redirected or `NO_COLOR` is set.
+    #[arg(long, value_enum, default_value_t, global = true)]
+    pub color: Color,
     #[command(flatten)]
     pub overrides: Overrides,
 }
@@ -211,6 +233,28 @@ impl Overrides {
             .extend(self.clippy_arg.iter().cloned());
         Ok(())
     }
+}
+
+/// Validate global modes after clap has propagated arguments across subcommands.
+///
+/// # Errors
+/// Returns standard clap errors for invalid arguments or incompatible global modes.
+pub fn parse(
+    arguments: impl IntoIterator<Item = OsString>,
+) -> std::result::Result<Cli, clap::Error> {
+    let cli = Cli::try_parse_from(normalize(arguments))?;
+    // Global conflicts can cross parser scopes; validate the final merged values as well.
+    let conflict = if cli.quiet && cli.verbose > 0 {
+        Some("--quiet cannot be used with --verbose")
+    } else if cli.no_config && cli.config.is_some() {
+        Some("--config cannot be used with --no-config")
+    } else {
+        None
+    };
+    if let Some(message) = conflict {
+        return Err(Cli::command().error(clap::error::ErrorKind::ArgumentConflict, message));
+    }
+    Ok(cli)
 }
 
 /// Cargo invokes cargo-dev with "dev" as its first argument; direct execution omits it.

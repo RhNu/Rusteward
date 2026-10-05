@@ -3,10 +3,7 @@
 use std::{ffi::OsString, fs, path::Path, process::Command, time::Instant};
 
 use anyhow::{Context, Result};
-use rusteward_core::{
-    diagnostic::Diagnostic,
-    rules::{Rules, inspect},
-};
+use rusteward_core::rules::{Rules, inspect as inspect_rules};
 use tracing::{debug, info};
 
 use crate::{
@@ -14,7 +11,7 @@ use crate::{
     discovery::{Source, Workspace},
     execution::Executor,
     process::{self, CargoOptions},
-    report::{ClippyReport, Report},
+    report::{ClippyReport, Diagnostic, Report},
 };
 
 /// Independent source findings are merged by the caller in discovery order.
@@ -106,17 +103,15 @@ fn lint_flags(settings: &LintSettings) -> Vec<OsString> {
     flags
 }
 
-/// Collect custom diagnostics even if Clippy later reports compilation or lint failures.
+/// Collect custom source diagnostics independently from Cargo execution.
 ///
 /// # Errors
-/// Returns an error when source reads, Clippy configuration or execution, or compiler-message
-/// decoding fails.
-pub fn run(
+/// Returns an error when a source cannot be read or the executor cannot complete its tasks.
+pub fn inspect(
     workspace: &Workspace,
     sources: &[Source],
     settings: &Settings,
     executor: &Executor,
-    options: &CargoOptions,
 ) -> Result<Report> {
     let started = Instant::now();
     let mut report = Report {
@@ -138,7 +133,7 @@ pub fn run(
     })?;
     for result in results {
         report.skipped += usize::from(result.skipped);
-        report.extend_custom(result.diagnostics);
+        report.diagnostics.extend(result.diagnostics);
     }
     info!(
         files = report.files,
@@ -147,62 +142,84 @@ pub fn run(
         elapsed_ms = started.elapsed().as_millis(),
         "source inspection complete"
     );
-    if settings.lint.clippy {
-        let configuration_directory =
-            tempfile::tempdir().context("cannot create isolated Clippy configuration directory")?;
-        let configuration = clippy_config_toml(&settings.lint.clippy_config)?;
-        fs::write(
-            configuration_directory.path().join("clippy.toml"),
-            configuration,
-        )
-        .context("cannot write isolated Clippy configuration")?;
-        let mut invocation = command(
-            workspace,
-            &settings.lint,
-            options,
-            configuration_directory.path(),
-        );
-        info!(toolchain = ?settings.lint.toolchain, lints = settings.lint.clippy_lints.len(), parameters = settings.lint.clippy_config.len(), "running cargo clippy with managed profile");
-        debug!(arguments = ?invocation.get_args().collect::<Vec<_>>(), configuration = %configuration_directory.path().display(), "constructed Clippy invocation");
-        let clippy_started = Instant::now();
-        let output = invocation.output().context(
-            "cannot start cargo clippy; install the clippy component for the selected toolchain",
-        )?;
-        let (parsed, success) = messages::parse(&output.stdout, &workspace.root)
-            .and_then(|parsed| {
-                let success = parsed.success(output.status.success())?;
-                Ok((parsed, success))
-            })
-            .with_context(|| {
-                format!(
-                    "cannot interpret Clippy output ({}); stdout:\n{}\nstderr:\n{}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                )
-            })?;
-        debug!(status = %output.status, build_success = ?parsed.build_success, diagnostics = parsed.diagnostics.len(), "collected Clippy results");
-        info!(
-            success,
-            elapsed_ms = clippy_started.elapsed().as_millis(),
-            "Clippy execution complete"
-        );
-        report.diagnostics.extend(parsed.diagnostics);
-        report.clippy = Some(ClippyReport {
-            success,
-            exit_code: output.status.code(),
-            build_success: parsed.build_success,
-            output: parsed.output,
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        });
-    }
-    info!(
-        files = report.files,
-        findings = report.diagnostics.len(),
-        elapsed_ms = started.elapsed().as_millis(),
-        "lint workflow complete"
-    );
     Ok(report)
+}
+
+/// Run the managed Clippy profile and retain process output before decoding its records.
+///
+/// # Errors
+/// Returns an error for configuration, execution, or compiler-message decoding failures.
+pub fn clippy(
+    workspace: &Workspace,
+    settings: &Settings,
+    options: &CargoOptions,
+    report: &mut Report,
+) -> Result<()> {
+    let configuration_directory =
+        tempfile::tempdir().context("cannot create isolated Clippy configuration directory")?;
+    let configuration = clippy_config_toml(&settings.lint.clippy_config)?;
+    fs::write(
+        configuration_directory.path().join("clippy.toml"),
+        configuration,
+    )
+    .context("cannot write isolated Clippy configuration")?;
+    let mut invocation = command(
+        workspace,
+        &settings.lint,
+        options,
+        configuration_directory.path(),
+    );
+    info!(toolchain = ?settings.lint.toolchain, lints = settings.lint.clippy_lints.len(), parameters = settings.lint.clippy_config.len(), "running cargo clippy with managed profile");
+    debug!(arguments = ?invocation.get_args().collect::<Vec<_>>(), configuration = %configuration_directory.path().display(), "constructed Clippy invocation");
+    let clippy_started = Instant::now();
+    let output = invocation.output().context(
+        "cannot start cargo clippy; install the clippy component for the selected toolchain",
+    )?;
+    decode_output(
+        &output.stdout,
+        &output.stderr,
+        &workspace.root,
+        output.status.success(),
+        output.status.code(),
+        report,
+    )
+    .with_context(|| format!("cannot interpret Clippy output ({})", output.status))?;
+    info!(
+        success = report.clippy.as_ref().is_some_and(|clippy| clippy.success),
+        elapsed_ms = clippy_started.elapsed().as_millis(),
+        "Clippy execution complete"
+    );
+    Ok(())
+}
+
+/// Capture raw output first so a protocol failure remains inspectable in the partial report.
+fn decode_output(
+    stdout: &[u8],
+    stderr: &[u8],
+    root: &Path,
+    process_success: bool,
+    exit_code: Option<i32>,
+    report: &mut Report,
+) -> Result<()> {
+    report.clippy = Some(ClippyReport {
+        success: false,
+        exit_code,
+        build_success: None,
+        output: String::from_utf8_lossy(stdout).into_owned(),
+        stderr: String::from_utf8_lossy(stderr).into_owned(),
+    });
+    let parsed = messages::parse(stdout, root)?;
+    let success = parsed.success(process_success)?;
+    debug!(build_success = ?parsed.build_success, diagnostics = parsed.diagnostics.len(), "collected Clippy results");
+    report.diagnostics.extend(parsed.diagnostics);
+    report.clippy = Some(ClippyReport {
+        success,
+        exit_code,
+        build_success: parsed.build_success,
+        output: parsed.output,
+        stderr: String::from_utf8_lossy(stderr).into_owned(),
+    });
+    Ok(())
 }
 
 /// Inspect an in-memory source and keep generated-file accounting beside its findings.
@@ -215,7 +232,10 @@ fn inspect_source(file: &Source, root: &Path, source: &str, rules: &Rules) -> In
         };
     }
     let path = file.path.strip_prefix(root).unwrap_or(&file.path);
-    let diagnostics = inspect(path, source, file.edition, rules);
+    let diagnostics = inspect_rules(path, source, file.edition, rules)
+        .into_iter()
+        .filter_map(|diagnostic| Diagnostic::custom(diagnostic, source))
+        .collect::<Vec<_>>();
     debug!(path = %path.display(), diagnostics = diagnostics.len(), "inspected source rules");
     Inspection {
         skipped: false,

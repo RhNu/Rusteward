@@ -4,7 +4,7 @@ use clap::Parser;
 use rusteward_core::diagnostic::Severity;
 use rusteward_workspace::config::Settings;
 
-use super::{Cli, Command, Overrides, normalize};
+use super::{Cli, Color, Command, Overrides, parse};
 
 #[test]
 fn jobs_are_global_before_after_and_between_nested_commands() {
@@ -48,8 +48,7 @@ fn direct_and_cargo_invocations_share_the_command_surface() {
         vec!["cargo-dev", "format", "--check"],
         vec!["cargo-dev", "dev", "format", "--check"],
     ] {
-        let cli =
-            Cli::try_parse_from(normalize(arguments.into_iter().map(OsString::from))).unwrap();
+        let cli = parse(arguments.into_iter().map(OsString::from)).unwrap();
         assert!(matches!(cli.command, Command::Format { check: true, .. }));
     }
 }
@@ -77,9 +76,80 @@ fn global_flags_after_commands_apply_to_effective_settings() {
 
 #[test]
 fn rejects_conflicting_config_modes_and_unknown_rules() {
-    assert!(
-        Cli::try_parse_from(["cargo-dev", "lint", "--config", "a.toml", "--no-config"]).is_err()
-    );
+    for arguments in [
+        vec!["cargo-dev", "lint", "--config", "a.toml", "--no-config"],
+        vec!["cargo-dev", "--config", "a.toml", "check", "--no-config"],
+        vec!["cargo-dev", "--no-config", "format", "--config", "a.toml"],
+    ] {
+        assert_eq!(
+            parse(arguments.into_iter().map(OsString::from))
+                .unwrap_err()
+                .kind(),
+            clap::error::ErrorKind::ArgumentConflict
+        );
+    }
     let cli = Cli::try_parse_from(["cargo-dev", "lint", "--rule", "unknown=off"]).unwrap();
     assert!(cli.overrides.apply(&mut Settings::default()).is_err());
+}
+
+#[test]
+fn color_options_are_global_and_accept_only_the_supported_modes() {
+    for arguments in [
+        vec!["cargo-dev", "--color", "always", "format"],
+        vec!["cargo-dev", "lint", "--color=always"],
+        vec!["cargo-dev", "config", "--color", "always", "show"],
+        vec!["cargo-dev", "config", "show", "--color=always"],
+    ] {
+        assert_eq!(Cli::try_parse_from(arguments).unwrap().color, Color::Always);
+    }
+    for (argument, expected) in [
+        ("--color=auto", Color::Auto),
+        ("--color=never", Color::Never),
+    ] {
+        assert_eq!(
+            Cli::try_parse_from(["cargo-dev", "check", argument])
+                .unwrap()
+                .color,
+            expected
+        );
+    }
+    assert_eq!(
+        Cli::try_parse_from(["cargo-dev", "check"]).unwrap().color,
+        Color::Auto
+    );
+    assert!(Cli::try_parse_from(["cargo-dev", "check", "--color=sometimes"]).is_err());
+}
+
+#[test]
+fn quiet_and_verbose_are_mutually_exclusive_across_command_boundaries() {
+    for arguments in [
+        vec!["cargo-dev", "lint", "-q", "-v"],
+        vec!["cargo-dev", "--quiet", "check", "-vv"],
+        vec!["cargo-dev", "-v", "config", "show", "--quiet"],
+    ] {
+        let result = parse(arguments.iter().copied().map(OsString::from));
+        assert_eq!(
+            result.unwrap_err().kind(),
+            clap::error::ErrorKind::ArgumentConflict
+        );
+    }
+    let cli = Cli::try_parse_from(["cargo-dev", "--json", "lint", "-q"]).unwrap();
+    assert!(cli.json && cli.quiet);
+    let cli = Cli::try_parse_from(["cargo-dev", "--json", "lint", "-vv"]).unwrap();
+    assert!(cli.json);
+    assert_eq!(cli.verbose, 2);
+}
+
+#[test]
+fn automatic_color_uses_terminal_capability_and_explicit_modes_override_no_color() {
+    for (terminal, no_color, expected) in [
+        (false, false, false),
+        (false, true, false),
+        (true, false, true),
+        (true, true, false),
+    ] {
+        assert_eq!(Color::Auto.enabled(terminal, no_color), expected);
+        assert!(Color::Always.enabled(terminal, no_color));
+        assert!(!Color::Never.enabled(terminal, no_color));
+    }
 }

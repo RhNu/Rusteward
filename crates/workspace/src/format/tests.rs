@@ -23,8 +23,9 @@ fn final_difference_retains_original_coordinates_and_texts() {
         },
     );
     let diagnostic = result.diagnostic.unwrap();
-    assert_eq!(diagnostic.path, Path::new("src/lib.rs"));
-    assert_eq!((diagnostic.line, diagnostic.column), (2, 1));
+    assert_eq!(diagnostic.path.as_deref(), Some(Path::new("src/lib.rs")));
+    assert_eq!((diagnostic.line, diagnostic.column), (Some(2), Some(1)));
+    assert_eq!(diagnostic.snippet.as_deref(), Some("fn b() {}"));
     assert!(result.diff.unwrap().contains("--- a/src/lib.rs"));
     let change = result.change.unwrap();
     assert_eq!(change.path, source.path);

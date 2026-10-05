@@ -12,11 +12,11 @@ User-visible behavior, settings, and examples are documented in
 
 The dependency direction is `apps/cli` → `crates/workspace` → `crates/core`.
 
-| Crate                                       | Responsibility                                                                                                                                               | Main modules                                                              |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| `rusteward-core` in `crates/core`           | Pure transformations, lexical counting, source policies, diagnostics, and failure policy. Accepts source text, path values, editions, and rules without I/O. | `spacing`, `lines`, `rules`, `diagnostic`                                 |
-| `rusteward-workspace` in `crates/workspace` | Configuration layers, Cargo metadata, deterministic scanning, bounded file execution, subprocesses, formatting writes, and workflow reports.                 | `config`, `discovery`, `execution`, `process`, `format`, `lint`, `report` |
-| `rusteward` in `apps/cli`                   | The `cargo-dev` binary: argument normalization and parsing, tracing setup, text or JSON presentation, and exit status.                                       | `args`, `output`, `main`                                                  |
+| Crate                                       | Responsibility                                                                                                                                               | Main modules                                                                          |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `rusteward-core` in `crates/core`           | Pure transformations, lexical counting, source policies, diagnostics, and failure policy. Accepts source text, path values, editions, and rules without I/O. | `spacing`, `lines`, `rules`, `diagnostic`                                             |
+| `rusteward-workspace` in `crates/workspace` | Configuration layers, Cargo metadata, deterministic scanning, bounded file execution, subprocesses, formatting writes, and workflow reports.                 | `config`, `discovery`, `execution`, `process`, `format`, `lint`, `workflow`, `report` |
+| `rusteward` in `apps/cli`                   | The `cargo-dev` binary: argument normalization and parsing, tracing setup, text or JSON presentation, and exit status.                                       | `args`, `output`, `main`                                                              |
 
 The core crate must not discover projects, read files, run commands, or render terminal output.
 Workspace workflows produce reports rather than presentation text. The CLI applies overrides to the
@@ -178,37 +178,58 @@ unrelated text verbatim. A small lexical check recognizes declared protocol reas
 truncated JSON because `cargo_metadata::Message::parse_stream` otherwise silently treats malformed
 records as ordinary text. Duplicate final build results are rejected. A successful process must
 include a build result; an unsuccessful process may fail before Cargo emits any protocol records.
-The process exit status and Cargo's build result both participate in Clippy success.
+The process exit status and Cargo's build result both participate in Clippy success. `lint::inspect`
+handles custom source rules; `lint::clippy` handles the managed compiler invocation. Clippy captures
+raw output in the report before decoding it, so protocol failures retain inspectable logs without
+repeating them in an error string.
 
 ### Check and reporting
 
-`check` runs read-only formatting, then lint, and merges their reports without double-counting the
-shared source set. The phases run sequentially using the same executor. Ordinary formatting
-differences allow lint to continue. Configuration, I/O, process-start, and formatting failures abort
-the operation.
+`workflow::run` selects Formatting, Source rules, and Clippy phases from a CLI-independent command.
+The phases run sequentially using the same executor. Each selected phase starts as not run and moves
+through running to passed, failed, or error. Disabled Clippy becomes skipped without execution.
+Stage failure is evaluated against only that stage's new diagnostics and process status, including
+the custom warning policy. Ordinary failed checks allow later stages to continue.
 
-`Report` carries source counts, changed and skipped counts, unified diagnostics, optional diffs, and
-Clippy process/build status with separate non-protocol output. The workspace report model adapts
-pure core diagnostics and Cargo compiler messages into common source, code, level, message, and
-optional primary-location fields. Compiler details retain package/target context, every span, nested
-diagnostics, grouped suggestions, explanations, and rendered text. Cargo types stay in the workspace
-and presentation layers; core does not depend on the compiler protocol. Disabled core diagnostics
-are omitted during conversion.
+The runner emits stage-boundary events to an observer on the calling thread. These events contain
+state and timing data; terminal output belongs to the CLI. File workers never render progress. An
+operational failure stops the workflow, marks the current phase as error, and leaves later phases
+not run. `Outcome` retains the partial `Report` alongside the optional error. Its exit status gives
+operational failures precedence over failed checks. Configuration and discovery failures occur
+before the runner and have no partial workflow report.
+
+`Report` carries phase status and timing, source counts, changed and skipped counts, unified
+diagnostics, optional diffs, and Clippy process/build status with separate non-protocol output.
+Reports merge without double-counting the shared source set. The workspace report model adapts pure
+core diagnostics and Cargo compiler messages into common source, code, level, message, and optional
+primary-location fields. Custom findings capture their original source line while that text is
+already available; the CLI does not re-read files to render diagnostics. Compiler details retain
+package/target context, every span, nested diagnostics, grouped suggestions, explanations, and
+rendered text. Cargo types stay in the workspace and presentation layers; core does not depend on
+the compiler protocol. Disabled core diagnostics are omitted during conversion.
 
 Summary counts use top-level diagnostics across all producers; child notes and suggestions do not
-increase error totals. Failure policy combines error/ICE diagnostics with Clippy's status. Denying
-custom warnings affects only Rusteward diagnostics, allowing explicit Clippy flags to control
-compiler warning policy without relabeling findings. The CLI maps success, completed check failure,
-and operational failure to exit codes 0, 1, and 2.
+increase error totals. Failure policy combines error/ICE diagnostics, phase failures, and Clippy's
+status. Denying custom warnings affects only Rusteward diagnostics, allowing explicit Clippy flags
+to control compiler warning policy without relabeling findings. The CLI maps success, completed
+check failure, and operational failure to exit codes 0, 1, and 2.
 
 Libraries emit tracing events; the CLI owns filters and writes logs to stderr. Operational errors
 have one presentation path instead of appearing again as tracing errors. JSON command results use a
-common versioned outcome envelope, and check results expose diagnostics, summaries, diffs, and child
-logs as separate fields. JSON report contents are independent of quiet/verbose presentation. Text
-mode shows compact diagnostics and help by default, full rendered compiler context in verbose mode,
-and captured child logs on verbosity or process failure. Quiet mode suppresses successful summaries
-and default tracing. Explicit `RUST_LOG` filters override that tracing default. Argument parsing,
-help, and version presentation remain owned by clap.
+common versioned outcome envelope, and workflow results expose phases, diagnostics, summaries,
+diffs, and child logs as separate fields, including completed results on abort. JSON report contents
+are independent of presentation flags.
+
+Text mode presents live phase boundaries, complete compiler-rendered diagnostics, and a
+command-specific final result. Custom findings use a compatible heading/location layout and captured
+source snippets. The fallback compiler presenter keeps child notes and edit groups nested instead of
+flattening replacement spans. Captured Cargo logs are labelled sections shown in verbose mode, on
+unexplained process failures, or on operational compiler failures. Compiler errors that already
+explain a failed build suppress default Cargo log replay. Quiet mode keeps full diagnostics and
+necessary failure information while hiding progress and successful summaries. Runtime terminal and
+color capabilities are explicit presentation inputs; the CLI applies styling after collecting
+unstyled compiler output. Explicit `RUST_LOG` filters override the tracing default. Argument
+parsing, help, and version presentation remain owned by clap.
 
 The CLI's report/error writers accept output sinks so unit tests can verify presentation using
 synthetic reports without launching processes or interacting with a terminal.

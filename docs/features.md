@@ -453,32 +453,77 @@ flags passed to Clippy.
 
 ### Text output
 
-By default, each finding uses `path:line:column: severity[rule]: message`, followed by available
-help and replacement suggestions. Diagnostics without a primary source location show their producer
-and message without invented coordinates. Suggestions include their replacement ranges and
-applicability; Rusteward does not apply them.
+Human output follows this order: workspace banner, live phase status, diagnostic blocks, optional
+captured logs, diffs, and final result. Each phase announces its start immediately and reports its
+completion with elapsed time. `check` runs Formatting, Source rules, and Clippy; `format` runs only
+Formatting, and `lint` runs Source rules and Clippy. Disabling Clippy reports it as skipped.
 
-| Mode               | Behavior                                                                                           |
-| ------------------ | -------------------------------------------------------------------------------------------------- |
-| Default            | Compact diagnostics, repair hints, and a combined summary. Successful Cargo build logs are hidden. |
-| `--quiet` / `-q`   | Keep findings and failure context; hide successful summaries and default workflow logs.            |
-| `--verbose` / `-v` | Show full compiler-rendered diagnostics, captured Cargo logs, and workflow-stage logs.             |
-| `-vv`              | Add per-file workflow logs to verbose output.                                                      |
-| `--json`           | Write one structured result to stdout, including diagnostics, diffs, and child logs.               |
+A phase reports passed or failed according to its own findings and warning policy. An operational
+failure reports error, retains results from completed phases, and marks later phases as not run. The
+final result says passed, failed, or aborted, matching exit codes 0, 1, and 2.
 
-Text findings, summaries, and logs go to stderr; unified diffs and configuration results go to
-stdout. Failed Clippy invocations retain their non-diagnostic output in every text mode so Cargo
-failures before compilation remain visible. If the process fails without any diagnostic or captured
-text, Rusteward reports its available process/build status. Compiler output is captured without
-color. `RUST_LOG` explicitly overrides the workflow log filter, including the default quiet filter;
-it does not change the diagnostic presentation mode. Quiet and verbose flags conflict.
+Compiler findings use the compiler's complete rendered text in every text mode, including source
+excerpts, location markers, notes, and repair suggestions. Rusteward findings use a
+`severity[rule]: message` heading, a separate `--> path:line:column` location, and the original
+source line when available. Each diagnostic is separated by a blank line. Locationless findings
+identify their producer without invented coordinates.
+
+When compiler-rendered text is unavailable, Rusteward presents structured locations, source lines,
+and nested notes or help. Multipart edits stay under their owning suggestion; multiline replacements
+are printed as actual lines. Applicability metadata remains in JSON. Rusteward does not apply
+compiler suggestions.
+
+| Mode               | Behavior                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------ |
+| Default            | Live phase status, complete diagnostics, and a command-specific summary.                         |
+| `--quiet` / `-q`   | Keep complete diagnostics and necessary failure context; hide progress and successful summaries. |
+| `--verbose` / `-v` | Add labelled captured Cargo stdout/stderr and workflow logs.                                     |
+| `-vv`              | Add per-file debug logs, command arguments, and other execution details.                         |
+| `--json`           | Write one complete structured result to stdout; suppress human banners, progress, and summaries. |
+
+Default and quiet output hide captured Cargo logs when compiler errors already explain a failed
+Clippy invocation. This keeps Cargo's build progress and trailing failure summaries out of the
+diagnostic list. Default output points to `-v` or `--json` for the retained logs. If Clippy fails
+without compiler errors, or its output cannot be decoded, every text mode includes labelled captured
+output and the available process/build status. Verbose output includes captured logs even after a
+successful build.
+
+Summaries omit zero warning, error, and skip counts. `format` reports files actually formatted;
+`format --check` and `check` describe differences as files that need formatting. An aborted `format`
+does not claim that no files were changed: file writes are atomic individually and a later write
+failure may leave earlier changes in place.
+
+Text progress, findings, summaries, and logs go to stderr; unified diffs and configuration results
+go to stdout. Data output is flushed before the final summary. `--quiet` and `--verbose` conflict.
+`RUST_LOG` explicitly overrides the workflow log filter, including the quiet default; it does not
+change diagnostic presentation. Workflow logs omit timestamps; `-vv` includes their module targets.
+
+`--color auto` is the default: human status and diagnostic headings use color only when stderr is a
+terminal and `NO_COLOR` is unset or empty. `--color always` forces styling and `--color never`
+disables it. Explicit color choices override `NO_COLOR`. Captured Cargo output and compiler data are
+collected without color; JSON output remains unstyled regardless of color mode. Help, version
+output, and argument-parsing errors use clap's standard presentation.
 
 ### JSON output
 
 Every JSON command result includes `schema_version: 1`, `success`, and `exit_code`. Completed
 format/lint/check results also include `workspace`, `summary` (warning/error counts), and `report`.
-Quiet and verbose flags do not remove information from that JSON result. Workflow logs remain on
-stderr.
+Quiet, verbose, and color flags do not remove information from that JSON result. Workflow logs
+remain on stderr. A workflow that aborts adds an `error` string while preserving its partial
+`report`, `summary`, and `workspace`. Failures before workflow execution have only the outcome
+envelope and `error`.
+
+`report.phases` contains each selected phase in execution order:
+
+| Field        | Meaning                                                                                       |
+| ------------ | --------------------------------------------------------------------------------------------- |
+| `phase`      | `formatting`, `source_rules`, or `clippy`.                                                    |
+| `status`     | `not_run`, `running`, `passed`, `failed`, `skipped`, or `error`.                              |
+| `elapsed_ms` | Elapsed milliseconds, or `null` when the phase never started, including intentional skipping. |
+
+`report.changed` is the number of applied changes for a completed `format`, and the number of files
+requiring formatting for `format --check` or `check`. The report retains results from completed
+phases on abort; counts do not describe incomplete file processing or partially applied writes.
 
 `report.diagnostics` contains objects with these common fields:
 
@@ -489,6 +534,7 @@ stderr.
 | `severity`               | The original diagnostic level, such as `warning`, `error`, `note`, or `help`.                                                                      |
 | `message`                | The diagnostic message as data.                                                                                                                    |
 | `path`, `line`, `column` | The first primary location, with one-based coordinates; `null` when absent. Absolute workspace paths are shortened relative to the workspace root. |
+| `snippet`                | Present when an original source line is available for a Rusteward finding; absent for compiler findings.                                           |
 | `compiler`               | Present for Clippy/rustc findings: package ID, Cargo target, all spans, nested children, optional explanation, and rendered text.                  |
 
 Compiler spans retain primary/secondary locations, source excerpts, macro expansion context,
@@ -500,12 +546,11 @@ non-protocol stdout in `output`, and Cargo logs in `stderr`. Compiler JSON recor
 diagnostics instead of embedded in an escaped stdout string. Artifact and build-script protocol
 records do not appear in the report. Other stdout, including unrelated JSON, is preserved. Malformed
 known Cargo records or a successful process with no Cargo build result are operational failures
-(exit code 2), with captured output included in the error context.
+(exit code 2), with captured output retained in the partial report's Clippy fields.
 
-This schema replaces the earlier unversioned output: consumers should read the unified diagnostic
-array instead of parsing `report.clippy.stdout`. `config show` adds `workspace`, `sources`, and
-`settings` to the outcome envelope; `config init` adds `path`. Operational failures add an `error`
-string. Help, version output, and argument-parsing errors use the standard CLI text presentation.
+The phase and snippet fields extend schema version 1. Consumers should read the unified diagnostic
+array instead of parsing child logs. `config show` adds `workspace`, `sources`, and `settings` to
+the outcome envelope; `config init` adds `path`.
 
 `check` continues to lint after ordinary formatting differences. An operational error, such as a
 rustfmt warning or unreadable file, stops the run instead.

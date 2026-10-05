@@ -7,3 +7,4 @@ pub mod format;
 pub mod lint;
 pub mod process;
 pub mod report;
+pub mod workflow;

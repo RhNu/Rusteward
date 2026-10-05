@@ -26,6 +26,9 @@ pub struct Diagnostic {
     pub path: Option<PathBuf>,
     pub line: Option<usize>,
     pub column: Option<usize>,
+    /// The original source line for custom findings, before any transformation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compiler: Option<CompilerDetails>,
 }
@@ -42,7 +45,7 @@ pub struct CompilerDetails {
 }
 
 impl Diagnostic {
-    fn custom(diagnostic: SourceDiagnostic) -> Option<Self> {
+    pub(crate) fn custom(diagnostic: SourceDiagnostic, source: &str) -> Option<Self> {
         let severity = match diagnostic.severity {
             Severity::Off => return None,
             Severity::Warning => DiagnosticLevel::Warning,
@@ -56,6 +59,11 @@ impl Diagnostic {
             path: Some(diagnostic.path),
             line: Some(diagnostic.line),
             column: Some(diagnostic.column),
+            snippet: diagnostic
+                .line
+                .checked_sub(1)
+                .and_then(|line| source.split('\n').nth(line))
+                .map(|line| line.trim_end_matches('\r').to_owned()),
             compiler: None,
         })
     }
@@ -85,6 +93,7 @@ impl Diagnostic {
             path,
             line: span.map(|span| span.line_start),
             column: span.map(|span| span.column_start),
+            snippet: None,
             compiler: Some(CompilerDetails {
                 package_id: message.package_id,
                 target: message.target,
@@ -101,8 +110,38 @@ impl Diagnostic {
     }
 }
 
+/// The stages describe workflow completion independently from diagnostic counts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Formatting,
+    SourceRules,
+    Clippy,
+}
+
+/// Distinguish a failed check from incomplete execution and intentional skipping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseStatus {
+    NotRun,
+    Running,
+    Passed,
+    Failed,
+    Skipped,
+    Error,
+}
+
+/// Stage duration remains absent when execution never started.
+#[derive(Clone, Debug, Serialize)]
+pub struct PhaseReport {
+    pub phase: Phase,
+    pub status: PhaseStatus,
+    pub elapsed_ms: Option<u128>,
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct Report {
+    pub phases: Vec<PhaseReport>,
     pub files: usize,
     pub changed: usize,
     pub skipped: usize,
@@ -131,9 +170,16 @@ pub struct Summary {
 }
 
 impl Report {
-    pub fn extend_custom(&mut self, diagnostics: impl IntoIterator<Item = SourceDiagnostic>) {
-        self.diagnostics
-            .extend(diagnostics.into_iter().filter_map(Diagnostic::custom));
+    pub fn extend_custom(
+        &mut self,
+        diagnostics: impl IntoIterator<Item = SourceDiagnostic>,
+        source: &str,
+    ) {
+        self.diagnostics.extend(
+            diagnostics
+                .into_iter()
+                .filter_map(|diagnostic| Diagnostic::custom(diagnostic, source)),
+        );
     }
 
     pub fn summary(&self) -> Summary {
@@ -158,6 +204,10 @@ impl Report {
                     && diagnostic.source == DiagnosticSource::Rusteward
                     && diagnostic.severity == DiagnosticLevel::Warning)
         }) || self.clippy.as_ref().is_some_and(|clippy| !clippy.success)
+            || self
+                .phases
+                .iter()
+                .any(|phase| matches!(phase.status, PhaseStatus::Failed | PhaseStatus::Error))
     }
 
     /// Both workflows scan the same inputs; aggregate findings without double-counting files.
@@ -168,6 +218,7 @@ impl Report {
         self.diagnostics.extend(other.diagnostics);
         self.diffs.extend(other.diffs);
         self.clippy = other.clippy.or(self.clippy.take());
+        self.phases.extend(other.phases);
     }
 }
 

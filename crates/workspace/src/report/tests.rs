@@ -63,11 +63,14 @@ fn clippy(success: bool) -> ClippyReport {
 #[test]
 fn converts_enabled_custom_findings_and_omits_disabled_rules() {
     let mut report = Report::default();
-    report.extend_custom([
-        custom(Severity::Off),
-        custom(Severity::Warning),
-        custom(Severity::Error),
-    ]);
+    report.extend_custom(
+        [
+            custom(Severity::Off),
+            custom(Severity::Warning),
+            custom(Severity::Error),
+        ],
+        "one\ntwo\nthree\n    original();\n",
+    );
     assert_eq!(report.diagnostics.len(), 2);
     let warning = &report.diagnostics[0];
     assert_eq!(warning.source, DiagnosticSource::Rusteward);
@@ -78,13 +81,14 @@ fn converts_enabled_custom_findings_and_omits_disabled_rules() {
     assert_eq!(warning.line, Some(4));
     assert_eq!(warning.column, Some(8));
     assert!(warning.compiler.is_none());
+    assert_eq!(warning.snippet.as_deref(), Some("    original();"));
     assert_eq!(report.diagnostics[1].severity, DiagnosticLevel::Error);
 }
 
 #[test]
 fn deny_warnings_applies_to_custom_findings_without_changing_their_severity() {
     let mut report = Report::default();
-    report.extend_custom([custom(Severity::Warning)]);
+    report.extend_custom([custom(Severity::Warning)], "");
     assert!(!report.failed(false));
     assert!(report.failed(true));
     assert_eq!(report.diagnostics[0].severity, DiagnosticLevel::Warning);
@@ -116,7 +120,7 @@ fn compiler_errors_fail_even_when_the_process_reports_success() {
         assert!(report.failed(false), "{level}");
     }
     let mut report = Report::default();
-    report.extend_custom([custom(Severity::Error)]);
+    report.extend_custom([custom(Severity::Error)], "");
     assert!(report.failed(false));
 }
 
@@ -153,7 +157,7 @@ fn counts_top_level_warning_error_and_ice_without_counting_child_messages() {
         ],
         ..Report::default()
     };
-    report.extend_custom([custom(Severity::Warning)]);
+    report.extend_custom([custom(Severity::Warning)], "");
     assert_eq!(report.summary().warnings, 2);
     assert_eq!(report.summary().errors, 2);
 }
@@ -168,7 +172,7 @@ fn appends_findings_and_changes_without_double_counting_scanned_sources() {
         clippy: Some(clippy(true)),
         ..Report::default()
     };
-    report.extend_custom([custom(Severity::Warning)]);
+    report.extend_custom([custom(Severity::Warning)], "");
     report.append(Report {
         files: 6,
         changed: 1,
@@ -301,4 +305,55 @@ fn serializes_compiler_findings_as_structured_diagnostics() {
     assert_eq!(diagnostic["compiler"]["rendered"], "rendered finding\n");
     assert_eq!(serialized["clippy"]["output"], "unrelated stdout");
     assert_eq!(serialized["clippy"]["stderr"], "process stderr");
+}
+
+#[test]
+fn custom_snippets_preserve_original_unicode_and_empty_lines() {
+    let mut diagnostic = custom(Severity::Error);
+    diagnostic.line = 2;
+    let mut report = Report::default();
+    report.extend_custom([diagnostic], "fn café() {}\r\n\r\n");
+    assert_eq!(report.diagnostics[0].snippet.as_deref(), Some(""));
+    let mut diagnostic = custom(Severity::Warning);
+    diagnostic.line = 1;
+    report.extend_custom([diagnostic], "fn café() {}\r\n");
+    assert_eq!(
+        report.diagnostics[1].snippet.as_deref(),
+        Some("fn café() {}")
+    );
+    let mut diagnostic = custom(Severity::Error);
+    diagnostic.line = 0;
+    report.extend_custom([diagnostic], "original");
+    assert!(report.diagnostics[2].snippet.is_none());
+    report.extend_custom([custom(Severity::Error)], "one line");
+    assert!(report.diagnostics[3].snippet.is_none());
+}
+
+#[test]
+fn appends_stage_reports_and_treats_operational_stage_errors_as_failure() {
+    use super::{Phase, PhaseReport, PhaseStatus};
+
+    let mut report = Report {
+        phases: vec![PhaseReport {
+            phase: Phase::Formatting,
+            status: PhaseStatus::Passed,
+            elapsed_ms: Some(4),
+        }],
+        ..Report::default()
+    };
+    report.append(Report {
+        phases: vec![PhaseReport {
+            phase: Phase::SourceRules,
+            status: PhaseStatus::Error,
+            elapsed_ms: Some(2),
+        }],
+        ..Report::default()
+    });
+    assert_eq!(report.phases.len(), 2);
+    assert_eq!(report.phases[0].phase, Phase::Formatting);
+    assert_eq!(report.phases[1].phase, Phase::SourceRules);
+    assert!(report.failed(false));
+    let serialized = serde_json::to_value(report).unwrap();
+    assert_eq!(serialized["phases"][1]["status"], "error");
+    assert_eq!(serialized["phases"][1]["elapsed_ms"], 2);
 }

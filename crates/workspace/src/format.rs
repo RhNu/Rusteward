@@ -24,7 +24,7 @@ use crate::{
     discovery::{Source, Workspace},
     execution::Executor,
     process,
-    report::Report,
+    report::{Diagnostic as ReportDiagnostic, Report},
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -44,7 +44,7 @@ struct Change {
 struct Prepared {
     change: Option<Change>,
     skipped: bool,
-    diagnostic: Option<Diagnostic>,
+    diagnostic: Option<ReportDiagnostic>,
     diff: Option<String>,
 }
 
@@ -108,7 +108,7 @@ pub fn run(
     })?;
     for result in results {
         report.skipped += usize::from(result.skipped);
-        report.extend_custom(result.diagnostic);
+        report.diagnostics.extend(result.diagnostic);
         report.diffs.extend(result.diff);
         changes.extend(result.change);
     }
@@ -210,10 +210,10 @@ fn compare(
     }
     if options.check {
         let (line, column) = first_difference(&original, &formatted);
-        result.diagnostic = Some(Diagnostic {
+        result.diagnostic = ReportDiagnostic::custom(Diagnostic {
             path: path.into(), line, column, rule: "format", severity: Severity::Error,
             message: "source differs from the rustfmt plus declaration-spacing result; run cargo dev format".into(),
-        });
+        }, &original);
     }
     result.change = Some(Change {
         path: source.path.clone(),

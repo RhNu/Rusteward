@@ -2,11 +2,12 @@ use std::{collections::BTreeMap, ffi::OsString, path::Path};
 
 use rusteward_core::{Edition, rules::Rules};
 
-use super::{command, inspect_source};
+use super::{command, decode_output, inspect_source};
 use crate::{
     config::{ClippyLevel, LintSettings},
     discovery::{Source, Workspace},
     process::CargoOptions,
+    report::Report,
 };
 
 #[test]
@@ -26,6 +27,28 @@ fn generated_source_has_no_findings_even_with_invalid_syntax() {
 }
 
 #[test]
+fn malformed_clippy_protocol_retains_raw_process_output_in_the_report() {
+    let stdout = b"{\"reason\":\"compiler-message\",\"message\":broken}\n";
+    let stderr = b"Cargo execution context\n";
+    let mut report = Report::default();
+    let error = decode_output(
+        stdout,
+        stderr,
+        Path::new("project"),
+        false,
+        Some(101),
+        &mut report,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("malformed Cargo Clippy message"));
+    let clippy = report.clippy.unwrap();
+    assert!(!clippy.success);
+    assert_eq!(clippy.exit_code, Some(101));
+    assert_eq!(clippy.output, String::from_utf8_lossy(stdout));
+    assert_eq!(clippy.stderr, String::from_utf8_lossy(stderr));
+}
+
+#[test]
 fn source_findings_use_relative_paths_and_original_coordinates() {
     let file = Source {
         path: "project/src/lib.rs".into(),
@@ -39,10 +62,17 @@ fn source_findings_use_relative_paths_and_original_coordinates() {
     );
     assert!(!result.skipped);
     assert_eq!(result.diagnostics.len(), 1);
-    assert_eq!(result.diagnostics[0].path, Path::new("src/lib.rs"));
+    assert_eq!(
+        result.diagnostics[0].path.as_deref(),
+        Some(Path::new("src/lib.rs"))
+    );
     assert_eq!(
         (result.diagnostics[0].line, result.diagnostics[0].column),
-        (2, 1)
+        (Some(2), Some(1))
+    );
+    assert_eq!(
+        result.diagnostics[0].snippet.as_deref(),
+        Some("mod tests {}")
     );
 }
 
