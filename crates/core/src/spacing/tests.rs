@@ -111,11 +111,11 @@ fn preserves_existing_blank_lines_and_is_idempotent() {
     let output = format(source);
     assert_eq!(output, "fn a() {}\n\n\nfn b() {}\n\nfn c() {}\n");
     assert_eq!(format(&output), output);
-    assert!(
+    assert_eq!(
         separate_declarations(&output, Edition::Edition2024)
             .unwrap()
-            .missing_lines
-            .is_empty()
+            .missing_lines,
+        [] as [usize; 0]
     );
 }
 

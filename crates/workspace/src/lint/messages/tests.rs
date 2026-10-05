@@ -56,7 +56,7 @@ fn collects_compiler_diagnostics_in_emission_order() {
     assert_eq!(parsed.diagnostics[1].message, "an error");
     assert_eq!(parsed.diagnostics[1].severity, DiagnosticLevel::Error);
     assert_eq!(parsed.build_success, Some(false));
-    assert!(parsed.output.is_empty());
+    assert_eq!(parsed.output, "");
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn validates_and_discards_non_diagnostic_cargo_records() {
     });
     let stdout = format!("{artifact}\n{build_script}\n");
     let parsed = parse(stdout.as_bytes(), Path::new("/project")).unwrap();
-    assert!(parsed.output.is_empty());
+    assert_eq!(parsed.output, "");
     assert!(parsed.diagnostics.is_empty());
     assert_eq!(parsed.build_success, None);
 }
@@ -141,7 +141,7 @@ fn rejects_duplicate_build_results() {
 fn permits_empty_output_and_failures_before_any_build_result() {
     let parsed = parse(b"", Path::new("/project")).unwrap();
     assert_eq!(parsed.build_success, None);
-    assert!(parsed.output.is_empty());
+    assert_eq!(parsed.output, "");
     let parsed = parse(b"dependency resolution failed", Path::new("/project")).unwrap();
     assert_eq!(parsed.build_success, None);
     assert_eq!(parsed.output, "dependency resolution failed");
@@ -154,7 +154,7 @@ fn accepts_unicode_compiler_messages_and_protocol_without_final_newline() {
     let parsed = parse(stdout.as_bytes(), Path::new("/project")).unwrap();
     assert_eq!(parsed.diagnostics[0].message, "déjà vu 🦀");
     assert_eq!(parsed.build_success, Some(false));
-    assert!(parsed.output.is_empty());
+    assert_eq!(parsed.output, "");
 }
 
 #[test]

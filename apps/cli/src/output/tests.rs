@@ -67,7 +67,7 @@ fn compact_output_unifies_diagnostics_and_counts_without_success_logs() {
         ..Report::default()
     };
     let (stdout, stderr) = render(&report, &[], true);
-    assert!(stdout.is_empty());
+    assert_eq!(stdout, "");
     assert!(stderr.contains("src/lib.rs:3:7: warning[sample-rule]: something needs attention"));
     assert!(stderr.contains("src/lib.rs:3:7: error[sample-rule]: something needs attention"));
     assert!(stderr.contains("1 warnings, 1 errors"));
@@ -209,7 +209,7 @@ fn json_is_one_versioned_result_with_structured_findings_and_separate_logs() {
     };
     for flags in [vec!["--json"], vec!["--json", "-q"], vec!["--json", "-vv"]] {
         let (stdout, stderr) = render(&report, &flags, true);
-        assert!(stderr.is_empty());
+        assert_eq!(stderr, "");
         assert_eq!(stdout.lines().count(), 1);
         let result: Value = serde_json::from_str(&stdout).unwrap();
         assert_eq!(result["schema_version"], 1);
@@ -247,14 +247,14 @@ fn operational_errors_use_exit_two_and_preserve_the_error_chain_once() {
         let mut stderr = Vec::new();
         write_error(json, &error, &mut stdout, &mut stderr).unwrap();
         if json {
-            assert!(stderr.is_empty());
+            assert_eq!(stderr, [] as [u8; 0]);
             let result: Value = serde_json::from_slice(&stdout).unwrap();
             assert_eq!(result["schema_version"], 1);
             assert_eq!(result["exit_code"], 2);
             assert_eq!(result["success"], false);
             assert_eq!(result["error"], "configuration failed: bad setting");
         } else {
-            assert!(stdout.is_empty());
+            assert_eq!(stdout, [] as [u8; 0]);
             let stderr = String::from_utf8(stderr).unwrap();
             assert_eq!(stderr.matches("configuration failed").count(), 1);
             assert!(stderr.contains("bad setting"));
