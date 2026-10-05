@@ -1,6 +1,11 @@
 # Only overrides are needed; cargo dev config show displays the complete profile.
 version = 1
 
+[execution]
+# Bound Rusteward file processing: 0 selects available CPUs and file count; 1 is serial.
+# Cargo Clippy controls its own jobs.
+jobs = 0
+
 [scan]
 # Arrays replace the previous config layer. Globs are relative to the workspace root.
 exclude = ["**/vendor/**", "**/dist/**"]

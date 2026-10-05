@@ -6,6 +6,48 @@ use super::{
 };
 
 #[test]
+fn execution_defaults_to_automatic_jobs() {
+    assert_eq!(Settings::default().execution.jobs, 0);
+    for source in ["", "[execution]"] {
+        let settings: Settings = toml::from_str(source).unwrap();
+        assert_eq!(settings.execution.jobs, 0);
+    }
+}
+
+#[test]
+fn execution_layers_replace_jobs_and_preserve_unrelated_settings() {
+    let mut base = toml::Value::try_from(Settings::default()).unwrap();
+    overlay(
+        &mut base,
+        "[execution]\njobs = 8\n[format]\nspacing = false",
+    )
+    .unwrap();
+    for jobs in [2, 1, 0] {
+        overlay(&mut base, &format!("[execution]\njobs = {jobs}")).unwrap();
+        let settings: Settings = base.clone().try_into().unwrap();
+        assert_eq!(settings.execution.jobs, jobs);
+        assert!(!settings.format.spacing);
+        validate(&settings).unwrap();
+    }
+    overlay(&mut base, "[lint]\nclippy = false").unwrap();
+    let settings: Settings = base.try_into().unwrap();
+    assert_eq!(settings.execution.jobs, 0);
+    assert!(!settings.lint.clippy);
+}
+
+#[test]
+fn execution_rejects_negative_noninteger_and_unknown_jobs_settings() {
+    for value in ["-1", "1.5", "'2'", "true"] {
+        let source = format!("[execution]\njobs = {value}");
+        assert!(
+            toml::from_str::<Settings>(&source).is_err(),
+            "accepted {value}"
+        );
+    }
+    assert!(toml::from_str::<Settings>("[execution]\nworkers = 2").is_err());
+}
+
+#[test]
 fn layers_merge_options_and_replace_arrays() {
     let mut base = toml::Value::try_from(Settings::default()).unwrap();
     overlay(

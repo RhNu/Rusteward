@@ -1,6 +1,12 @@
 //! Prepare the complete rustfmt plus declaration-spacing result before replacing sources.
 
-use std::{fs, io::Write, path::Path, process::Command};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    process::Command,
+    time::Instant,
+};
 
 use anyhow::{Context, Result, ensure};
 use rusteward_core::{
@@ -16,6 +22,7 @@ use tracing::{debug, info};
 use crate::{
     config::{FormatSettings, Settings, rustfmt_value},
     discovery::{Source, Workspace},
+    execution::Executor,
     process,
     report::Report,
 };
@@ -26,10 +33,19 @@ pub struct Options {
     pub diff: bool,
 }
 
-struct Change<'a> {
-    source: &'a Source,
+struct Change {
+    path: PathBuf,
     original: String,
     formatted: String,
+}
+
+#[derive(Default)]
+/// A file task owns its results so worker threads never mutate the shared report.
+struct Prepared {
+    change: Option<Change>,
+    skipped: bool,
+    diagnostic: Option<Diagnostic>,
+    diff: Option<String>,
 }
 
 /// Explicit CLI options override an empty config so ambient rustfmt files cannot alter the profile.
@@ -67,8 +83,10 @@ pub fn run(
     workspace: &Workspace,
     sources: &[Source],
     settings: &Settings,
+    executor: &Executor,
     options: Options,
 ) -> Result<Report> {
+    let started = Instant::now();
     let mut report = Report {
         files: sources.len(),
         ..Report::default()
@@ -78,96 +96,131 @@ pub fn run(
         NamedTempFile::new().context("cannot create isolated rustfmt configuration")?;
     info!(
         files = sources.len(),
+        jobs = executor.jobs(),
         check = options.check,
         "starting format workflow"
     );
-    for source in sources {
-        let original = fs::read_to_string(&source.path)
-            .with_context(|| format!("cannot read {}", source.path.display()))?;
-        if rusteward_core::is_generated(&original) {
-            report.skipped += 1;
-            debug!(path = %source.path.display(), "skipping generated source");
-            continue;
-        }
-        let invocation = command(
-            &workspace.root,
-            empty_config.path(),
-            source.edition,
-            &settings.format,
-        )?;
-        let output = process::with_input(invocation, &original, &source.path)?;
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        ensure!(
-            output.status.success(),
-            "rustfmt failed for {} ({}): {}",
-            source.path.display(),
-            output.status,
-            stderr.trim()
-        );
-        // rustfmt can accept unknown settings with a warning; never claim those settings were applied.
-        ensure!(
-            stderr.trim().is_empty(),
-            "rustfmt reported a warning for {}: {}",
-            source.path.display(),
-            stderr.trim()
-        );
-        let mut formatted =
-            String::from_utf8(output.stdout).context("rustfmt emitted non-UTF-8 output")?;
-        if settings.format.spacing {
-            let spacing = separate_declarations(&formatted, source.edition)
-                .map_err(anyhow::Error::msg)
-                .with_context(|| format!("cannot space {}", source.path.display()))?;
-            if let Some(reason) = spacing.skip_reason {
-                report.skipped += 1;
-                debug!(path = %source.path.display(), reason, "skipping declaration spacing");
-            }
-            formatted = spacing.text;
-        }
-        if original == formatted {
-            continue;
-        }
-        let path = source
-            .path
-            .strip_prefix(&workspace.root)
-            .unwrap_or(&source.path);
-        if options.diff {
-            report.diffs.push(diff(path, &original, &formatted));
-        }
-        if options.check {
-            let (line, column) = first_difference(&original, &formatted);
-            report.extend_custom([Diagnostic {
-                path: path.into(), line, column, rule: "format", severity: Severity::Error,
-                message: "source differs from the rustfmt plus declaration-spacing result; run cargo dev format".into(),
-            }]);
-        }
-        changes.push(Change {
-            source,
-            original,
-            formatted,
-        });
+    let results = executor.map(sources, |source| {
+        let file_started = Instant::now();
+        let result = prepare(source, &workspace.root, empty_config.path(), settings, options);
+        debug!(path = %source.path.display(), elapsed_ms = file_started.elapsed().as_millis(), success = result.is_ok(), "finished format file task");
+        result
+    })?;
+    for result in results {
+        report.skipped += usize::from(result.skipped);
+        report.extend_custom(result.diagnostic);
+        report.diffs.extend(result.diff);
+        changes.extend(result.change);
     }
     report.changed = changes.len();
     if !options.check {
         // Check all originals before any replacement, so editor changes cause an explicit conflict.
         for change in &changes {
-            let current = fs::read_to_string(&change.source.path)?;
+            let current = fs::read_to_string(&change.path)
+                .with_context(|| format!("cannot recheck {}", change.path.display()))?;
             ensure!(
                 current == change.original,
                 "{} changed during formatting; retry with the updated source",
-                change.source.path.display()
+                change.path.display()
             );
         }
         for change in &changes {
-            replace(&change.source.path, &change.formatted)?;
-            info!(path = %change.source.path.display(), "formatted source file");
+            replace(&change.path, &change.formatted)?;
+            info!(path = %change.path.display(), "formatted source file");
         }
     }
     info!(
         changed = report.changed,
         skipped = report.skipped,
+        elapsed_ms = started.elapsed().as_millis(),
         "format workflow complete"
     );
     Ok(report)
+}
+
+/// Keep child execution and syntax trees local to one file task.
+fn prepare(
+    source: &Source,
+    root: &Path,
+    empty_config: &Path,
+    settings: &Settings,
+    options: Options,
+) -> Result<Prepared> {
+    let original = fs::read_to_string(&source.path)
+        .with_context(|| format!("cannot read {}", source.path.display()))?;
+    if rusteward_core::is_generated(&original) {
+        debug!(path = %source.path.display(), "skipping generated source");
+        return Ok(Prepared {
+            skipped: true,
+            ..Prepared::default()
+        });
+    }
+    let invocation = command(root, empty_config, source.edition, &settings.format)?;
+    let output = process::with_input(invocation, &original, &source.path)?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    ensure!(
+        output.status.success(),
+        "rustfmt failed for {} ({}): {}",
+        source.path.display(),
+        output.status,
+        stderr.trim()
+    );
+    // rustfmt can accept unknown settings with a warning; never claim those settings were applied.
+    ensure!(
+        stderr.trim().is_empty(),
+        "rustfmt reported a warning for {}: {}",
+        source.path.display(),
+        stderr.trim()
+    );
+    let mut formatted =
+        String::from_utf8(output.stdout).context("rustfmt emitted non-UTF-8 output")?;
+    let mut skipped = false;
+    if settings.format.spacing {
+        let spacing = separate_declarations(&formatted, source.edition)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("cannot space {}", source.path.display()))?;
+        if let Some(reason) = spacing.skip_reason {
+            skipped = true;
+            debug!(path = %source.path.display(), reason, "skipping declaration spacing");
+        }
+        formatted = spacing.text;
+    }
+    Ok(compare(source, root, original, formatted, skipped, options))
+}
+
+/// Describe the final text difference without reading or replacing any source file.
+fn compare(
+    source: &Source,
+    root: &Path,
+    original: String,
+    formatted: String,
+    skipped: bool,
+    options: Options,
+) -> Prepared {
+    let mut result = Prepared {
+        skipped,
+        ..Prepared::default()
+    };
+    if original == formatted {
+        return result;
+    }
+    let path = source.path.strip_prefix(root).unwrap_or(&source.path);
+    if options.diff {
+        result.diff = Some(diff(path, &original, &formatted));
+    }
+    if options.check {
+        let (line, column) = first_difference(&original, &formatted);
+        result.diagnostic = Some(Diagnostic {
+            path: path.into(), line, column, rule: "format", severity: Severity::Error,
+            message: "source differs from the rustfmt plus declaration-spacing result; run cargo dev format".into(),
+        });
+    }
+    result.change = Some(Change {
+        path: source.path.clone(),
+        original,
+        formatted,
+    });
+    result
 }
 
 /// Replace each file atomically while retaining its permissions.

@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use rusteward_workspace::{config, discovery, format, lint, process};
+use rusteward_workspace::{config, discovery, execution::Executor, format, lint, process};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -96,28 +96,33 @@ fn run(cli: &Cli) -> Result<bool> {
         return Ok(false);
     }
     let sources = discovery::sources(&workspace, &settings.scan)?;
+    let executor = Executor::new(&settings.execution, sources.len())?;
     let report = match &cli.command {
         Command::Format { check, diff } => format::run(
             &workspace,
             &sources,
             &settings,
+            &executor,
             format::Options {
                 check: *check,
                 diff: *diff,
             },
         )?,
-        Command::Lint => lint::run(&workspace, &sources, &settings, &cargo)?,
+        Command::Lint => lint::run(&workspace, &sources, &settings, &executor, &cargo)?,
         Command::Check { diff } => {
             let mut report = format::run(
                 &workspace,
                 &sources,
                 &settings,
+                &executor,
                 format::Options {
                     check: true,
                     diff: *diff,
                 },
             )?;
-            report.append(lint::run(&workspace, &sources, &settings, &cargo)?);
+            report.append(lint::run(
+                &workspace, &sources, &settings, &executor, &cargo,
+            )?);
             report
         },
         Command::Config { .. } => unreachable!("configuration commands returned above"),

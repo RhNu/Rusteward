@@ -92,6 +92,9 @@ pub enum ConfigCommand {
     reason = "configuration overrides represent independent command-line switches"
 )]
 pub struct Overrides {
+    /// File-processing jobs: 0 selects automatically, 1 is serial; does not control Cargo Clippy.
+    #[arg(short = 'j', long, global = true)]
+    pub jobs: Option<usize>,
     /// Append an exclusion glob relative to the workspace root (repeatable).
     #[arg(long, global = true)]
     pub exclude: Vec<String>,
@@ -143,6 +146,9 @@ impl Overrides {
     /// # Errors
     /// Returns an error if a rule name, severity, or rustfmt override is invalid.
     pub fn apply(&self, settings: &mut Settings) -> Result<()> {
+        if let Some(jobs) = self.jobs {
+            settings.execution.jobs = jobs;
+        }
         settings.scan.exclude.extend(self.exclude.iter().cloned());
         if let Some(warn) = self.line_warning {
             settings.rules.lines.warn = warn;

@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod discovery;
+pub mod execution;
 pub mod format;
 pub mod lint;
 pub mod process;

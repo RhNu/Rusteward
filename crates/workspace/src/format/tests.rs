@@ -2,8 +2,78 @@ use std::path::Path;
 
 use rusteward_core::Edition;
 
-use super::{command, diff, first_difference};
-use crate::config::FormatSettings;
+use super::{Options, command, compare, diff, first_difference};
+use crate::{config::FormatSettings, discovery::Source};
+
+#[test]
+fn final_difference_retains_original_coordinates_and_texts() {
+    let source = Source {
+        path: Path::new("project/src/lib.rs").into(),
+        edition: Edition::Edition2024,
+    };
+    let result = compare(
+        &source,
+        Path::new("project"),
+        "fn café() {}\nfn b() {}\n".into(),
+        "fn café() {}\n\nfn b() {}\n".into(),
+        false,
+        Options {
+            check: true,
+            diff: true,
+        },
+    );
+    let diagnostic = result.diagnostic.unwrap();
+    assert_eq!(diagnostic.path, Path::new("src/lib.rs"));
+    assert_eq!((diagnostic.line, diagnostic.column), (2, 1));
+    assert!(result.diff.unwrap().contains("--- a/src/lib.rs"));
+    let change = result.change.unwrap();
+    assert_eq!(change.path, source.path);
+    assert_eq!(change.original, "fn café() {}\nfn b() {}\n");
+    assert_eq!(change.formatted, "fn café() {}\n\nfn b() {}\n");
+}
+
+#[test]
+fn unchanged_skipped_spacing_produces_no_pending_change() {
+    let source = Source {
+        path: "src/lib.rs".into(),
+        edition: Edition::Edition2024,
+    };
+    let result = compare(
+        &source,
+        Path::new("."),
+        "fn a() {}\n".into(),
+        "fn a() {}\n".into(),
+        true,
+        Options {
+            check: true,
+            diff: true,
+        },
+    );
+    assert!(result.skipped);
+    assert!(result.change.is_none());
+    assert!(result.diagnostic.is_none());
+    assert!(result.diff.is_none());
+}
+
+#[test]
+fn apply_mode_retains_changes_even_when_spacing_was_skipped() {
+    let source = Source {
+        path: "external/lib.rs".into(),
+        edition: Edition::Edition2024,
+    };
+    let result = compare(
+        &source,
+        Path::new("project"),
+        "fn a(){}\n".into(),
+        "fn a() {}\n".into(),
+        true,
+        Options::default(),
+    );
+    assert!(result.skipped);
+    assert!(result.change.is_some());
+    assert!(result.diagnostic.is_none());
+    assert!(result.diff.is_none());
+}
 
 #[test]
 fn mismatch_coordinates_handle_unicode_and_newline_changes() {

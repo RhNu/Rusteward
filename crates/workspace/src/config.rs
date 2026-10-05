@@ -17,6 +17,7 @@ pub const FILE_NAME: &str = "rusteward.toml";
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Settings {
     pub version: u32,
+    pub execution: ExecutionSettings,
     pub scan: ScanSettings,
     pub format: FormatSettings,
     pub lint: LintSettings,
@@ -27,12 +28,21 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             version: 1,
+            execution: ExecutionSettings::default(),
             scan: ScanSettings::default(),
             format: FormatSettings::default(),
             lint: LintSettings::default(),
             rules: Rules::default(),
         }
     }
+}
+
+/// Bound Rusteward's file processing independently of Cargo's worker selection.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ExecutionSettings {
+    /// Zero selects available CPUs and file count; one processes files serially.
+    pub jobs: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

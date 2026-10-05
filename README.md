@@ -40,6 +40,10 @@ cargo dev lint
 cargo dev check --locked
 ```
 
+Use `cargo dev check --jobs 4 --locked` to process up to four source files concurrently. Automatic
+file concurrency is the default; `--jobs 1` selects serial processing. See
+[File concurrency](docs/features.md#file-concurrency) for configuration and Cargo Clippy behavior.
+
 Use `--quiet` to keep findings while hiding successful summaries, `-v` for full compiler context and
 workflow logs, or `--json` for versioned structured results. Output modes and the JSON diagnostic
 fields are described in [Diagnostics and CI](docs/features.md#diagnostics-and-ci).
@@ -92,9 +96,10 @@ use `unwrap`; test functions and `#[cfg(test)]` code can. `expect` remains avail
 [Clippy options](docs/features.md#clippy-options) for the profile and configuration behavior.
 
 Unit tests cover lexical line counting, declaration spacing, source policies, configuration merging,
-CLI parsing, command construction, compiler-message decoding, report/output behavior, and diffs.
-Installation, external workspaces, subprocess interactions, and CI platform compatibility require
-manual verification.
+CLI parsing, worker-count resolution, command construction, compiler-message decoding, report/output
+behavior, and diffs. Filesystem behavior, actual subprocess parallelism, parallel report ordering,
+editor conflicts, performance, installation, external workspaces, and CI platform compatibility
+require manual verification.
 
 ### Markdown formatting
 

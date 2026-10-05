@@ -1,17 +1,27 @@
 //! Combine authored-source policies with the selected Cargo Clippy invocation.
 
-use std::{ffi::OsString, fs, path::Path, process::Command};
+use std::{ffi::OsString, fs, path::Path, process::Command, time::Instant};
 
 use anyhow::{Context, Result};
-use rusteward_core::rules::inspect;
+use rusteward_core::{
+    diagnostic::Diagnostic,
+    rules::{Rules, inspect},
+};
 use tracing::{debug, info};
 
 use crate::{
     config::{LintSettings, Settings, clippy_config_toml},
     discovery::{Source, Workspace},
+    execution::Executor,
     process::{self, CargoOptions},
     report::{ClippyReport, Report},
 };
+
+/// Independent source findings are merged by the caller in discovery order.
+struct Inspection {
+    skipped: bool,
+    diagnostics: Vec<Diagnostic>,
+}
 
 /// Isolate Clippy's parameter discovery and apply groups before individual lint overrides.
 pub fn command(
@@ -105,28 +115,38 @@ pub fn run(
     workspace: &Workspace,
     sources: &[Source],
     settings: &Settings,
+    executor: &Executor,
     options: &CargoOptions,
 ) -> Result<Report> {
+    let started = Instant::now();
     let mut report = Report {
         files: sources.len(),
         ..Report::default()
     };
-    for file in sources {
-        let source = fs::read_to_string(&file.path)
-            .with_context(|| format!("cannot read {}", file.path.display()))?;
-        if rusteward_core::is_generated(&source) {
-            report.skipped += 1;
-            debug!(path = %file.path.display(), "skipping generated source");
-            continue;
-        }
-        let path = file
-            .path
-            .strip_prefix(&workspace.root)
-            .unwrap_or(&file.path);
-        let diagnostics = inspect(path, &source, file.edition, &settings.rules);
-        debug!(path = %path.display(), diagnostics = diagnostics.len(), "inspected source rules");
-        report.extend_custom(diagnostics);
+    info!(
+        files = sources.len(),
+        jobs = executor.jobs(),
+        "starting source inspection"
+    );
+    let results = executor.map(sources, |file| {
+        let file_started = Instant::now();
+        let result = fs::read_to_string(&file.path)
+            .with_context(|| format!("cannot read {}", file.path.display()))
+            .map(|source| inspect_source(file, &workspace.root, &source, &settings.rules));
+        debug!(path = %file.path.display(), elapsed_ms = file_started.elapsed().as_millis(), success = result.is_ok(), "finished source inspection task");
+        result
+    })?;
+    for result in results {
+        report.skipped += usize::from(result.skipped);
+        report.extend_custom(result.diagnostics);
     }
+    info!(
+        files = report.files,
+        skipped = report.skipped,
+        findings = report.diagnostics.len(),
+        elapsed_ms = started.elapsed().as_millis(),
+        "source inspection complete"
+    );
     if settings.lint.clippy {
         let configuration_directory =
             tempfile::tempdir().context("cannot create isolated Clippy configuration directory")?;
@@ -144,6 +164,7 @@ pub fn run(
         );
         info!(toolchain = ?settings.lint.toolchain, lints = settings.lint.clippy_lints.len(), parameters = settings.lint.clippy_config.len(), "running cargo clippy with managed profile");
         debug!(arguments = ?invocation.get_args().collect::<Vec<_>>(), configuration = %configuration_directory.path().display(), "constructed Clippy invocation");
+        let clippy_started = Instant::now();
         let output = invocation.output().context(
             "cannot start cargo clippy; install the clippy component for the selected toolchain",
         )?;
@@ -161,6 +182,11 @@ pub fn run(
                 )
             })?;
         debug!(status = %output.status, build_success = ?parsed.build_success, diagnostics = parsed.diagnostics.len(), "collected Clippy results");
+        info!(
+            success,
+            elapsed_ms = clippy_started.elapsed().as_millis(),
+            "Clippy execution complete"
+        );
         report.diagnostics.extend(parsed.diagnostics);
         report.clippy = Some(ClippyReport {
             success,
@@ -173,9 +199,28 @@ pub fn run(
     info!(
         files = report.files,
         findings = report.diagnostics.len(),
+        elapsed_ms = started.elapsed().as_millis(),
         "lint workflow complete"
     );
     Ok(report)
+}
+
+/// Inspect an in-memory source and keep generated-file accounting beside its findings.
+fn inspect_source(file: &Source, root: &Path, source: &str, rules: &Rules) -> Inspection {
+    if rusteward_core::is_generated(source) {
+        debug!(path = %file.path.display(), "skipping generated source");
+        return Inspection {
+            skipped: true,
+            diagnostics: Vec::new(),
+        };
+    }
+    let path = file.path.strip_prefix(root).unwrap_or(&file.path);
+    let diagnostics = inspect(path, source, file.edition, rules);
+    debug!(path = %path.display(), diagnostics = diagnostics.len(), "inspected source rules");
+    Inspection {
+        skipped: false,
+        diagnostics,
+    }
 }
 
 #[cfg(test)]

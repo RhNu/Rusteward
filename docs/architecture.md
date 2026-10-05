@@ -12,15 +12,16 @@ User-visible behavior, settings, and examples are documented in
 
 The dependency direction is `apps/cli` → `crates/workspace` → `crates/core`.
 
-| Crate                                       | Responsibility                                                                                                                                               | Main modules                                                 |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
-| `rusteward-core` in `crates/core`           | Pure transformations, lexical counting, source policies, diagnostics, and failure policy. Accepts source text, path values, editions, and rules without I/O. | `spacing`, `lines`, `rules`, `diagnostic`                    |
-| `rusteward-workspace` in `crates/workspace` | Configuration layers, Cargo metadata, deterministic scanning, subprocesses, formatting writes, and workflow reports.                                         | `config`, `discovery`, `process`, `format`, `lint`, `report` |
-| `rusteward` in `apps/cli`                   | The `cargo-dev` binary: argument normalization and parsing, tracing setup, text or JSON presentation, and exit status.                                       | `args`, `output`, `main`                                     |
+| Crate                                       | Responsibility                                                                                                                                               | Main modules                                                              |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| `rusteward-core` in `crates/core`           | Pure transformations, lexical counting, source policies, diagnostics, and failure policy. Accepts source text, path values, editions, and rules without I/O. | `spacing`, `lines`, `rules`, `diagnostic`                                 |
+| `rusteward-workspace` in `crates/workspace` | Configuration layers, Cargo metadata, deterministic scanning, bounded file execution, subprocesses, formatting writes, and workflow reports.                 | `config`, `discovery`, `execution`, `process`, `format`, `lint`, `report` |
+| `rusteward` in `apps/cli`                   | The `cargo-dev` binary: argument normalization and parsing, tracing setup, text or JSON presentation, and exit status.                                       | `args`, `output`, `main`                                                  |
 
 The core crate must not discover projects, read files, run commands, or render terminal output.
 Workspace workflows produce reports rather than presentation text. The CLI applies overrides to the
-workspace settings model instead of maintaining a second configuration model.
+workspace settings model instead of maintaining a second configuration model. Core transformations
+and inspections remain synchronous and pure; file concurrency belongs to the workspace crate.
 
 Syntax analysis uses rust-analyzer's `ra_ap_syntax`; line counting uses its published rustc lexer.
 The parser version and compatible Unicode tables are pinned to prevent lexical and syntactic
@@ -125,12 +126,31 @@ and character columns derived from UTF-8 byte offsets.
 
 ## Workflow execution
 
+### File executor
+
+`execution::Executor` owns a local Rayon thread pool for bounded file processing. The CLI creates
+one executor per invocation from `[execution].jobs` after CLI overrides and the discovered file
+count; format and lint reuse it. Automatic selection (`0`) uses
+`std::thread::available_parallelism`, falling back to one when the query fails, and caps the result
+at the file count. An explicit positive limit is also capped at the file count. Zero files need no
+workers, and one worker takes the serial path without creating a pool.
+
+The executor maps independent file tasks over the ordered source list and collects their results in
+input order. Each task returns its own result; workers do not mutate a shared `Report`. Sequential
+aggregation preserves diagnostic and diff ordering, combines counts, and selects the first
+operational error in source order after in-flight parallel tasks finish. The worker budget limits
+simultaneous file tasks and rustfmt processes, not total threads or processes. Cargo Clippy retains
+Cargo's own build job settings.
+
+Info tracing events record the effective worker count and elapsed phase time; debug events record
+per-file duration. Parallel events can arrive in completion order while reports retain source order.
+
 ### Format
 
-The workspace format workflow reads each source, skips generated files, invokes rustfmt with stdin,
-applies optional declaration spacing, and compares the final text against the original. Differences
-can become unified diffs, check diagnostics, or staged writes. A check observes the complete
-pipeline without writing authored source files.
+Each workspace format task reads a source, skips generated files, invokes rustfmt with stdin,
+applies optional declaration spacing, and compares the final text against the original. These tasks
+run through the executor. Differences can become unified diffs, check diagnostics, or staged writes.
+A check observes the complete pipeline without writing authored source files.
 
 All formatting finishes before source writes begin. The workflow re-reads every pending source and
 checks it against the original before any replacement, reporting an explicit conflict if an editor
@@ -144,12 +164,12 @@ interpolation, preserving paths with spaces or non-ASCII text.
 
 ### Lint
 
-Custom source inspection completes before optional Clippy execution. Custom rule errors do not
-suppress Clippy, so the report can include both sets of findings. Clippy's Cargo options precede
-`--`; `-D warnings`, configured group levels, individual lint levels, and user `clippy-args` follow
-it in that order. Group flags must precede individual lint overrides so a selected exception is not
-overwritten by its group. Cargo configuration continues to control the target platform and build
-environment.
+Custom source reads and independent inspections run through the executor, with results merged in
+source order before optional Clippy execution. Custom rule errors do not suppress Clippy, so the
+report can include both sets of findings. Clippy's Cargo options precede `--`; `-D warnings`,
+configured group levels, individual lint levels, and user `clippy-args` follow it in that order.
+Group flags must precede individual lint overrides so a selected exception is not overwritten by its
+group. Cargo configuration continues to control the target platform and build environment.
 
 Clippy runs with Cargo's JSON message format and color disabled. `lint::messages` is a pure decoder
 of captured stdout: it strictly validates recognized Cargo protocol records, collects compiler
@@ -163,8 +183,9 @@ The process exit status and Cargo's build result both participate in Clippy succ
 ### Check and reporting
 
 `check` runs read-only formatting, then lint, and merges their reports without double-counting the
-shared source set. Ordinary formatting differences allow lint to continue. Configuration, I/O,
-process-start, and formatting failures abort the operation.
+shared source set. The phases run sequentially using the same executor. Ordinary formatting
+differences allow lint to continue. Configuration, I/O, process-start, and formatting failures abort
+the operation.
 
 `Report` carries source counts, changed and skipped counts, unified diagnostics, optional diffs, and
 Clippy process/build status with separate non-protocol output. The workspace report model adapts
@@ -207,6 +228,7 @@ semantic analysis, requires it.
 
 Automated verification is limited to pure logic: transformations, rules, configuration merging and
 validation, argument construction, compiler-message decoding/conversion, report policies, output
-generation, CLI parsing, and diffs. Filesystem behavior, actual subprocess execution, installation,
-external workspace discovery, and editor integration require manual QA. Contributor commands and the
-Markdown formatting workflow are documented in the [README](../README.md#development).
+generation, CLI parsing, worker-count resolution, and diffs. Filesystem behavior, actual file and
+subprocess parallelism, parallel report ordering, installation, external workspace discovery, editor
+conflicts, and performance require manual QA. Contributor commands and the Markdown formatting
+workflow are documented in the [README](../README.md#development).

@@ -1,11 +1,50 @@
 use std::{collections::BTreeMap, ffi::OsString, path::Path};
 
-use super::command;
+use rusteward_core::{Edition, rules::Rules};
+
+use super::{command, inspect_source};
 use crate::{
     config::{ClippyLevel, LintSettings},
-    discovery::Workspace,
+    discovery::{Source, Workspace},
     process::CargoOptions,
 };
+
+#[test]
+fn generated_source_has_no_findings_even_with_invalid_syntax() {
+    let file = Source {
+        path: "project/src/mod.rs".into(),
+        edition: Edition::Edition2024,
+    };
+    let result = inspect_source(
+        &file,
+        Path::new("project"),
+        "// @generated\nfn {",
+        &Rules::default(),
+    );
+    assert!(result.skipped);
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
+fn source_findings_use_relative_paths_and_original_coordinates() {
+    let file = Source {
+        path: "project/src/lib.rs".into(),
+        edition: Edition::Edition2024,
+    };
+    let result = inspect_source(
+        &file,
+        Path::new("project"),
+        "const HEADER: () = ();\nmod tests {}\n",
+        &Rules::default(),
+    );
+    assert!(!result.skipped);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].path, Path::new("src/lib.rs"));
+    assert_eq!(
+        (result.diagnostics[0].line, result.diagnostics[0].column),
+        (2, 1)
+    );
+}
 
 #[test]
 fn separates_cargo_selection_from_rustc_flags() {

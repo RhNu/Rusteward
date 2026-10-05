@@ -269,6 +269,37 @@ operation.
 Exclusions affect formatting and custom rules. Clippy's compilation scope is determined by Cargo and
 the feature and target options, independently of scan globs.
 
+## File concurrency
+
+Formatting and custom source inspection process independent files concurrently. Configure the limit
+with `--jobs N` (or `-j N`), which overrides `[execution].jobs`:
+
+```toml
+[execution]
+jobs = 4
+```
+
+The default, `0`, selects the available parallelism reported by the operating system, capped by the
+number of selected files. If that query fails, automatic selection falls back to one worker. `1`
+processes files serially without a worker pool. A positive value caps simultaneous file tasks at the
+smaller of that value and the file count. No workers are needed for an empty source set.
+
+For formatting, a file task includes reading the source, running its rustfmt process, and applying
+declaration spacing. For custom rules, it includes reading and inspecting the source. The limit
+therefore caps simultaneous rustfmt processes as well as file tasks; it does not cap the total
+number of operating-system processes or threads. `check` still finishes the formatting phase before
+starting lint, and both phases reuse the same worker pool.
+
+Discovery order determines report and diff order regardless of task completion order. If multiple
+file tasks fail operationally, Rusteward finishes the in-flight parallel work and reports the first
+failure in discovery order. Formatting must succeed for every file before source writes can begin;
+conflict checks and atomic per-file replacements remain sequential.
+
+This setting controls Rusteward's file processing only. It is not passed to Cargo Clippy. Configure
+Clippy compilation parallelism with Cargo's `build.jobs` or `CARGO_BUILD_JOBS` independently.
+Workflow logs include the effective worker count and phase duration; per-file durations appear in
+debug logs (`-vv`).
+
 ## Configuration
 
 Settings have the following precedence, from lowest to highest:
@@ -492,3 +523,5 @@ cargo dev check --locked --json > rusteward-report.json
 Use the same stable Rust version and rustfmt/Clippy components as local development to keep
 formatting reproducible. Installation, subprocess behavior, external workspaces, and CI platform
 compatibility need manual verification; pure unit tests alone do not establish those outcomes.
+Actual file and subprocess parallelism, editor conflict handling, and performance also require
+manual QA.
