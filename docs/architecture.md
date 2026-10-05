@@ -213,6 +213,43 @@ help, and version presentation remain owned by clap.
 The CLI's report/error writers accept output sinks so unit tests can verify presentation using
 synthetic reports without launching processes or interacting with a terminal.
 
+## GitHub Actions distribution
+
+The root `action.yml` exposes a Node.js 24 installation Action independently of the Rust CLI.
+`action/src/model.mjs` owns pure platform, input, revision, asset, checksum, and manifest decisions;
+`action/src/install.mjs` owns GitHub API access, release polling, downloading, extraction,
+filesystem validation, caches, PATH registration, outputs, and installation logs. These
+responsibilities stay outside the Rust core and workspace crates.
+
+The installer resolves its source revision once to a full commit SHA. Local tool-cache and GitHub
+Actions cache entries are keyed by that SHA and target, and are validated before reuse. Disabling
+the cache input skips GitHub Actions cache operations but retains runner-local reuse. Downloads use
+the matching public `ci-<SHA>` prerelease and validate the archive checksum, embedded manifest, and
+binary hash. Incomplete releases are retried within the configured timeout; invalid packages fail.
+There is no older-release or source-build fallback. The Action does not run Rusteward or alter the
+consumer's Rust toolchain.
+
+`action/src/package.mjs` packages the binary and provenance manifest with checksums;
+`action/src/publish.mjs` publishes the complete platform set. `.github/workflows/ci.yml` verifies
+changes on pushes, pull requests, and manual dispatch. Publishing is restricted to main after
+verification and all native builds succeed: Windows x64 on Windows 2022, and Linux x64/ARM64 on
+Ubuntu 22.04. Linux artifacts use GNU libc and require glibc 2.35 or newer.
+
+Publication is restricted to `RhNu/Rusteward`. The publisher uploads all archives and checksums to a
+draft before making the prerelease visible, allowing interrupted draft uploads to be retried.
+Already-published packages are retained rather than replaced; an incomplete published release is an
+error. Publication jobs for the same commit run serially, so a push and manual dispatch cannot
+modify the same draft concurrently.
+
+`action/scripts/build.mjs` bundles the installer into the committed `action/dist/index.cjs` with
+dependency license notices, so consumer workflows need no npm install. Generated artifacts use LF
+line endings for reproducible checks across platforms. `action/scripts/check.mjs` checks JavaScript
+and YAML syntax and bundle freshness. Pure Action unit tests cover installation and packaging
+decisions; actual release publication, hosted installation, cache persistence, and performance
+remain manual verification boundaries. Installer code selection in `uses` is independent of binary
+source selection through the `ref` input. User-facing inputs and outputs belong in the
+[feature reference](features.md#github-actions-installation).
+
 ## Extension and verification boundaries
 
 Add source transformations or policies as pure core functions with behavioral unit tests using

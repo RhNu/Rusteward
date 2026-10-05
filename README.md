@@ -8,6 +8,25 @@ Requires Rust with rustfmt and Clippy installed for the target project's toolcha
 
 ## Installation
 
+For GitHub Actions, use this repository's installation Action. It downloads a precompiled binary,
+caches it by source commit and platform, and adds `cargo-dev` to PATH. Keep your existing Rust
+toolchain setup and Rusteward commands:
+
+```yaml
+- uses: actions/checkout@v7
+- uses: dtolnay/rust-toolchain@stable
+  with:
+    components: rustfmt, clippy
+- uses: RhNu/Rusteward@main
+- run: cargo dev check --locked
+```
+
+The Action supports Windows x64 and Linux x64/ARM64. Linux binaries require glibc 2.35 or newer;
+Alpine/musl and macOS are unsupported. By default it installs the main branch's latest commit,
+waiting up to 180 seconds if its precompiled release is not ready. See
+[GitHub Actions installation](docs/features.md#github-actions-installation) for inputs, outputs,
+caching, and source pinning.
+
 Install directly from GitHub:
 
 ```
@@ -100,6 +119,28 @@ CLI parsing, worker-count resolution, command construction, compiler-message dec
 behavior, and diffs. Filesystem behavior, actual subprocess parallelism, parallel report ordering,
 editor conflicts, performance, installation, external workspaces, and CI platform compatibility
 require manual verification.
+
+### Installation Action
+
+Use Node.js 24 and the pinned npm dependencies to develop the installation Action:
+
+```sh
+npm ci
+npm run test:action
+npm run build:action
+npm run check:action
+```
+
+Commit the generated bundle and dependency license notices in `action/dist` alongside source
+changes. `check:action` checks JavaScript and Action/workflow YAML syntax, then checks that the
+committed bundle matches its sources. Action unit tests cover pure installation and packaging
+decisions; hosted installation, cache persistence, cross-platform compatibility, and installation
+time remain unverified until checked in GitHub Actions.
+
+The repository's CI verifies Rust, Action, and documentation changes on pushes and pull requests.
+After successful verification on main, it builds all three supported platforms and publishes the
+complete `ci-<commit SHA>` prerelease. This repository's Cargo `dev` alias uses `cargo run`; invoke
+the installed binary directly with `cargo-dev check --locked` here to avoid rebuilding it.
 
 ### Markdown formatting
 

@@ -1,11 +1,21 @@
 {
-  "name": "rusteward-docs",
+  "name": "rusteward-tooling",
   "private": true,
   "scripts": {
+    "build:action": "node action/scripts/build.mjs",
+    "check:action": "node action/scripts/check.mjs",
+    "test:action": "node --test action/tests/*.test.mjs",
     "format:docs": "prettier --write \"**/*.md\"",
     "check:docs": "prettier --check \"**/*.md\""
   },
+  "dependencies": {
+    "@actions/cache": "6.3.0",
+    "@actions/core": "3.0.1",
+    "@actions/tool-cache": "4.0.0"
+  },
   "devDependencies": {
-    "prettier": "3.9.9"
+    "esbuild": "0.28.2",
+    "prettier": "3.9.9",
+    "yaml": "2.9.1"
   }
 }

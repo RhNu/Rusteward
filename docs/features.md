@@ -525,3 +525,76 @@ formatting reproducible. Installation, subprocess behavior, external workspaces,
 compatibility need manual verification; pure unit tests alone do not establish those outcomes.
 Actual file and subprocess parallelism, editor conflict handling, and performance also require
 manual QA.
+
+### GitHub Actions installation
+
+The repository's root Action installs Rusteward and adds its binary directory to PATH. It does not
+run checks or configure Rust, rustfmt, or Clippy. Prepare the target project's toolchain in your
+workflow, then retain your existing commands:
+
+```yaml
+- uses: RhNu/Rusteward@main
+- run: cargo dev check --locked
+```
+
+`uses: RhNu/Rusteward@main` selects the installer code. The `ref` input independently selects the
+Rusteward binary's source revision. Pin the Action to a commit for a stable installer while leaving
+`ref: main` to receive new tool builds, or pin both when reproducibility is required:
+
+```yaml
+- uses: RhNu/Rusteward@main
+  with:
+    ref: main
+    cache: "true"
+    wait-timeout: "180"
+- run: cargo dev check --locked
+```
+
+The producer publishes main commits only. A branch, tag, or pinned SHA must resolve to a commit with
+a published `ci-<SHA>` package; selecting another ref does not trigger a build.
+
+| Input          | Default               | Behavior                                                                             |
+| -------------- | --------------------- | ------------------------------------------------------------------------------------ |
+| `ref`          | `main`                | Source branch, tag, or full 40-character commit SHA. Resolved once per installation. |
+| `token`        | `${{ github.token }}` | GitHub API token used to resolve the revision and locate its release.                |
+| `cache`        | `true`                | Enable persistent GitHub Actions caching of the installed binary.                    |
+| `wait-timeout` | `180`                 | Seconds to wait for the complete release; an integer from `0` through `900`.         |
+
+The supported targets are:
+
+| Runner environment | Rust target                 | Build environment |
+| ------------------ | --------------------------- | ----------------- |
+| Windows x64        | `x86_64-pc-windows-msvc`    | Windows 2022      |
+| Linux x64          | `x86_64-unknown-linux-gnu`  | Ubuntu 22.04      |
+| Linux ARM64        | `aarch64-unknown-linux-gnu` | Ubuntu 22.04      |
+
+Linux requires glibc 2.35 or newer. Unsupported operating systems or architectures fail with an
+explicit error; Alpine/musl and macOS are not supported.
+
+The Action resolves the requested revision to a full SHA, then checks the runner's local tool cache
+and GitHub Actions cache using that SHA and target. `cache: "false"` disables GitHub Actions cache
+restore/save; a validated runner-local installation can still be reused. Cache entries are checked
+against the manifest and binary hash before use. Invalid entries are treated as misses, and an
+unavailable GitHub Actions cache or cache service failure allows installation to continue. A cache
+miss downloads the matching archive from the public `ci-<SHA>` prerelease. It verifies the archive's
+SHA256 checksum, embedded source and target manifest, and binary hash before installation. A release
+is available only after all three platform builds succeed. The Action waits for that complete
+release within `wait-timeout`; a missing release, missing platform asset, or failed validation stops
+installation. It never selects an older build or compiles from source as a fallback.
+
+| Output      | Meaning                                             |
+| ----------- | --------------------------------------------------- |
+| `sha`       | Full source commit SHA of the installed tool.       |
+| `target`    | Rust target triple selected for the runner.         |
+| `cache-hit` | Whether the installation was restored from a cache. |
+| `path`      | Installed binary directory added to PATH.           |
+
+Installation logs include the resolved SHA, platform, cache result, and elapsed time. A new main
+commit has its own cache entry and may require waiting for the producer workflow. Precompilation
+removes Rusteward compilation from the consumer installation step; actual download time, cache
+persistence, and hosted runner compatibility require GitHub Actions verification.
+
+In Rusteward's own checkout, `.cargo/config.toml` defines `dev` through `cargo run`, which takes
+precedence over the installed executable. Use `cargo-dev check --locked` there to run the installed
+binary directly. Other projects can continue using `cargo dev check --locked` unless their own Cargo
+alias overrides `dev`.

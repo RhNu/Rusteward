@@ -1,0 +1,3 @@
+action/dist/* text eol=lf
+# Preserve whitespace inside upstream string literals in the generated bundle.
+action/dist/index.cjs -whitespace
