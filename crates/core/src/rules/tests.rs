@@ -68,3 +68,57 @@ fn test_gated_modules_with_other_names_are_reported() {
     assert_eq!(found[0].rule, "inline-tests");
     assert_eq!(location("汉字\n  fn x() {}", 11), (2, 5));
 }
+
+#[test]
+fn accepts_crlf_multiline_literals_and_line_continuations() {
+    for source in [
+        "const S: &str = \"汉\r\n字\";\r\n",
+        "const B: &[u8] = b\"a\r\nb\";\r\n",
+        "const C: &std::ffi::CStr = c\"a\r\nb\";\r\n",
+        "const RAW: &str = r#\"a\r\nb\"#;\r\n",
+        "const S: &str = \"a\\\r\n    b\";\r\n",
+        "const S: &str = \"\\r\\n\";\r\n",
+    ] {
+        assert!(inspect_text("a.rs", source, &Rules::default()).is_empty());
+    }
+}
+
+#[test]
+fn crlf_inline_test_findings_keep_original_unicode_coordinates() {
+    let source =
+        "// 汉字\r\nconst S: &str = \"a\r\nb\";\n  mod tests {}\r\n#[cfg(test)]\r\nmod unit {}\r\n";
+    let found = inspect_text("a.rs", source, &Rules::default());
+    assert_eq!(found.len(), 2);
+    assert!(
+        found
+            .iter()
+            .all(|diagnostic| diagnostic.rule == "inline-tests")
+    );
+    assert_eq!((found[0].line, found[0].column), (4, 3));
+    assert_eq!((found[1].line, found[1].column), (5, 1));
+}
+
+#[test]
+fn real_syntax_errors_after_crlf_keep_original_character_columns() {
+    let source = "// 汉字\r\nconst S: &str = \"a\r\nb\";\r\nconst BAD: &str = \"汉\\q\";\r\n";
+    let found = inspect_text("a.rs", source, &Rules::default());
+    assert!(found.iter().all(|diagnostic| {
+        diagnostic.rule == "syntax"
+            && diagnostic.severity == Severity::Error
+            && diagnostic.line == 4
+    }));
+    assert!(found.iter().any(|diagnostic| diagnostic.column == 21));
+}
+
+#[test]
+fn normalization_does_not_hide_lone_cr_or_newly_adjacent_crlf_errors() {
+    for source in [
+        "const S: &str = \"a\rb\";\r\n",
+        "const S: &str = \"a\r\r\n\nb\";\r\n",
+    ] {
+        let found = inspect_text("a.rs", source, &Rules::default());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].rule, "syntax");
+        assert_eq!(found[0].severity, Severity::Error);
+    }
+}

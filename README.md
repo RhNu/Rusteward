@@ -95,6 +95,9 @@ even when invoked from a member's subdirectory.
 
 ## Development
 
+The repository's `.gitattributes` checks out text with LF on every platform, explicitly including
+Rust source. Windows batch scripts use CRLF, and binary assets are excluded from text conversion.
+
 Format Rust source with the workspace's built-in profile:
 
 ```

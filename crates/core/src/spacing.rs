@@ -1,6 +1,8 @@
 //! Enforce separation around selected declarations without rewriting source tokens.
 
-use ra_ap_syntax::{AstNode, Edition, SourceFile, SyntaxElement, SyntaxKind, SyntaxNode, ast};
+use ra_ap_syntax::{AstNode, Edition, SyntaxElement, SyntaxError, SyntaxKind, SyntaxNode, ast};
+
+use crate::{rules::location, source::SourceText};
 
 /// A pure formatting result, with original line numbers suitable for check diagnostics.
 pub struct Spacing {
@@ -19,9 +21,11 @@ pub fn separate_declarations(source: &str, edition: Edition) -> Result<Spacing, 
     if crate::is_generated(source) {
         return Ok(unchanged(source, Some("generated file")));
     }
-    let parsed = SourceFile::parse(source, edition);
-    if !parsed.errors().is_empty() {
-        return Err(format!("cannot parse Rust source: {:?}", parsed.errors()));
+    let input = SourceText::new(source);
+    let parsed = input.parse(edition);
+    let errors = parsed.errors();
+    if !errors.is_empty() {
+        return Err(parse_error_message(source, &input, &errors));
     }
     let root = parsed.syntax_node();
     if has_skip(&root) {
@@ -77,7 +81,8 @@ pub fn separate_declarations(source: &str, edition: Edition) -> Result<Spacing, 
                     token.kind() == SyntaxKind::WHITESPACE && token.text().contains('\n')
                 });
             let Some(gap) = gap else {
-                let line = line_starts.partition_point(|start| *start <= end);
+                let original_end = input.original_offset(end);
+                let line = line_starts.partition_point(|start| *start <= original_end);
                 return Err(format!(
                     "declarations share a line near line {line}; run rustfmt first"
                 ));
@@ -85,8 +90,9 @@ pub fn separate_declarations(source: &str, edition: Edition) -> Result<Spacing, 
             if gap.text().bytes().filter(|byte| *byte == b'\n').count() >= 2 {
                 continue;
             }
-            let offset = usize::from(gap.text_range().start());
-            let newline = if gap.text().contains("\r\n") {
+            let offset = input.original_offset(usize::from(gap.text_range().start()));
+            let gap_end = input.original_offset(usize::from(gap.text_range().end()));
+            let newline = if source[offset..gap_end].contains("\r\n") {
                 "\r\n"
             } else {
                 "\n"
@@ -107,6 +113,21 @@ pub fn separate_declarations(source: &str, edition: Edition) -> Result<Spacing, 
         missing_lines,
         skip_reason: None,
     })
+}
+
+/// Describe all parse failures at original source positions rather than normalized byte offsets.
+fn parse_error_message(source: &str, input: &SourceText<'_>, errors: &[SyntaxError]) -> String {
+    let messages: Vec<_> = errors
+        .iter()
+        .map(|error| {
+            let (line, column) = location(
+                source,
+                input.original_offset(usize::from(error.range().start())),
+            );
+            format!("{line}:{column}: {error}")
+        })
+        .collect();
+    format!("cannot parse Rust source: {}", messages.join("; "))
 }
 
 /// Identify declarations that require separation from either neighboring item.

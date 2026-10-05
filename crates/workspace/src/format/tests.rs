@@ -2,8 +2,8 @@ use std::path::Path;
 
 use rusteward_core::Edition;
 
-use super::{Options, command, compare, diff, first_difference};
-use crate::{config::FormatSettings, discovery::Source};
+use super::{Options, command, compare, diff, difference_message, first_difference};
+use crate::{config::FormatSettings, discovery::Source, report::DiagnosticLevel};
 
 #[test]
 fn final_difference_retains_original_coordinates_and_texts() {
@@ -124,4 +124,51 @@ fn rustfmt_options_are_independent_arguments() {
         args.windows(2)
             .any(|pair| pair == ["--config", "skip_children=true"])
     );
+}
+
+#[test]
+fn newline_only_mismatches_remain_format_errors_with_original_text_and_diff() {
+    let source = Source {
+        path: "src/lib.rs".into(),
+        edition: Edition::Edition2024,
+    };
+    let result = compare(
+        &source,
+        Path::new("."),
+        "fn café() {}\r\n".into(),
+        "fn café() {}\n".into(),
+        false,
+        Options {
+            check: true,
+            diff: true,
+        },
+    );
+    let diagnostic = result.diagnostic.unwrap();
+    assert_eq!(diagnostic.rule.as_deref(), Some("format"));
+    assert_eq!(diagnostic.severity, DiagnosticLevel::Error);
+    assert_eq!((diagnostic.line, diagnostic.column), (Some(1), Some(13)));
+    assert!(diagnostic.message.contains("CRLF -> LF"));
+    assert!(result.diff.is_some());
+    let change = result.change.unwrap();
+    assert_eq!(change.original, "fn café() {}\r\n");
+    assert_eq!(change.formatted, "fn café() {}\n");
+}
+
+#[test]
+fn newline_diagnostics_describe_mixed_input_and_configured_output_style() {
+    assert!(difference_message("a\r\nb\n", "a\nb\n").contains("mixed LF/CRLF -> LF"));
+    assert!(difference_message("a\nb\n", "a\r\nb\r\n").contains("LF -> CRLF"));
+}
+
+#[test]
+fn content_changes_lone_cr_and_final_newlines_are_not_newline_style_only_changes() {
+    for (original, formatted) in [
+        ("fn a(){}\r\n", "fn a() {}\n"),
+        ("a\r\n", "a"),
+        ("a", "a\n"),
+        ("a\rb\n", "ab\n"),
+        ("a\r\r\n\n", "a\n\n"),
+    ] {
+        assert!(difference_message(original, formatted).contains("declaration-spacing result"));
+    }
 }

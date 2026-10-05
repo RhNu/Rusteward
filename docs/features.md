@@ -32,6 +32,13 @@ Formatting has two ordered stages: rustfmt, then optional declaration spacing. `
 compares the original source with the result of both stages, so running rustfmt alone does not
 necessarily produce the final accepted format.
 
+The built-in rustfmt profile uses LF (`newline_style = "Unix"`) on every platform. CRLF source
+therefore fails the default formatting check and is converted to LF by `cargo dev format`. A
+newline-only mismatch reports the original and required styles, including mixed LF/CRLF inputs. This
+remains a format error; syntax analysis accepting CRLF does not waive the formatting policy. To keep
+Git checkouts consistent across platforms, add `*.rs text eol=lf` to the target repository's
+`.gitattributes`.
+
 Each file is sent to rustfmt independently through stdin with its owning package's edition.
 Rusteward supplies an empty temporary rustfmt configuration and passes its effective profile through
 CLI overrides. Standalone `rustfmt.toml` files and user rustfmt configurations do not participate;
@@ -241,6 +248,12 @@ module declarations do not trigger `inline-tests`. Detection uses syntax modules
 macros or evaluating complex conditional-compilation expressions. When enabled, this inspection also
 reports syntax errors as errors. Disabling `inline-tests` leaves the filename and lexical line-count
 rules active without requiring a syntax parse.
+
+Syntax analysis accepts CRLF source, including multiline string, byte-string, and C-string literals.
+It normalizes CRLF once before parsing, matching Rust's input rules, while diagnostics retain
+original source coordinates. Lone CR characters are retained, so invalid literals still report
+errors. Declaration spacing also parses this normalized view while preserving original tokens and
+each gap's newline style.
 
 Each rule accepts `off`, `warning`, or `error`. The two line-count tiers have independent thresholds
 and severities. An exceeded enabled upper tier takes precedence; disabling it still allows the lower

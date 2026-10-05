@@ -3,6 +3,7 @@
 pub mod diagnostic;
 pub mod lines;
 pub mod rules;
+mod source;
 pub mod spacing;
 
 pub use ra_ap_syntax::Edition;

@@ -210,10 +210,19 @@ fn compare(
     }
     if options.check {
         let (line, column) = first_difference(&original, &formatted);
-        result.diagnostic = ReportDiagnostic::custom(Diagnostic {
-            path: path.into(), line, column, rule: "format", severity: Severity::Error,
-            message: "source differs from the rustfmt plus declaration-spacing result; run cargo dev format".into(),
-        }, &original);
+        let message = difference_message(&original, &formatted);
+        debug!(path = %path.display(), line, column, %message, "source formatting differs");
+        result.diagnostic = ReportDiagnostic::custom(
+            Diagnostic {
+                path: path.into(),
+                line,
+                column,
+                rule: "format",
+                severity: Severity::Error,
+                message,
+            },
+            &original,
+        );
     }
     result.change = Some(Change {
         path: source.path.clone(),
@@ -221,6 +230,32 @@ fn compare(
         formatted,
     });
     result
+}
+
+/// Explain newline-only changes without weakening the byte-for-byte formatting check.
+fn difference_message(original: &str, formatted: &str) -> String {
+    if original.replace("\r\n", "\n") == formatted.replace("\r\n", "\n") {
+        return format!(
+            "source line endings differ from the formatting result ({} -> {}); run cargo dev format",
+            newline_style(original),
+            newline_style(formatted),
+        );
+    }
+    "source differs from the rustfmt plus declaration-spacing result; run cargo dev format".into()
+}
+
+/// Describe physical newline styles, including files with mixed LF and CRLF endings.
+fn newline_style(source: &str) -> &'static str {
+    let crlf = source.contains("\r\n");
+    let lf = source.as_bytes().iter().enumerate().any(|(index, byte)| {
+        *byte == b'\n' && (index == 0 || source.as_bytes()[index - 1] != b'\r')
+    });
+    match (lf, crlf) {
+        (true, true) => "mixed LF/CRLF",
+        (true, false) => "LF",
+        (false, true) => "CRLF",
+        (false, false) => "no line endings",
+    }
 }
 
 /// Replace each file atomically while retaining its permissions.

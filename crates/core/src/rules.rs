@@ -2,12 +2,13 @@
 
 use std::path::Path;
 
-use ra_ap_syntax::{AstNode, Edition, SourceFile, SyntaxElement, SyntaxKind, ast, ast::HasName};
+use ra_ap_syntax::{AstNode, Edition, SyntaxElement, SyntaxKind, ast, ast::HasName};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     diagnostic::{Diagnostic, Severity},
     lines::{ERROR_LINES, Level, WARN_LINES, code_lines},
+    source::SourceText,
 };
 
 /// Independent threshold tiers; disabling one tier leaves the other active.
@@ -117,9 +118,13 @@ fn inspect_inline_tests(
     severity: Severity,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let parsed = SourceFile::parse(source, edition);
+    let input = SourceText::new(source);
+    let parsed = input.parse(edition);
     for error in parsed.errors() {
-        let (line, column) = location(source, usize::from(error.range().start()));
+        let (line, column) = location(
+            source,
+            input.original_offset(usize::from(error.range().start())),
+        );
         push(
             diagnostics,
             path,
@@ -156,8 +161,10 @@ fn inspect_inline_tests(
                 tokens == "#[cfg(test)]"
             });
         if named_tests || test_gate {
-            let (line, column) =
-                location(source, usize::from(module.syntax().text_range().start()));
+            let (line, column) = location(
+                source,
+                input.original_offset(usize::from(module.syntax().text_range().start())),
+            );
             push(
                 diagnostics,
                 path,

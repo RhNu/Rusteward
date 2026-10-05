@@ -154,3 +154,45 @@ fn rejects_invalid_and_not_yet_formatted_inputs() {
     assert!(separate_declarations("fn broken( {", Edition::Edition2024).is_err());
     assert!(separate_declarations("fn a() {} fn b() {}", Edition::Edition2024).is_err());
 }
+
+#[test]
+fn spaces_crlf_literals_without_rewriting_original_tokens() {
+    let source = "const S: &str = \"汉\r\n字\";\r\nconst B: &[u8] = b\"a\r\nb\";\r\nconst C: &std::ffi::CStr = c\"a\r\nb\";\r\nconst RAW: &str = r#\"a\r\nb\"#;\r\nfn café() {}\r\nfn b() {}\r\n";
+    let expected = "const S: &str = \"汉\r\n字\";\r\nconst B: &[u8] = b\"a\r\nb\";\r\nconst C: &std::ffi::CStr = c\"a\r\nb\";\r\nconst RAW: &str = r#\"a\r\nb\"#;\r\n\r\nfn café() {}\r\n\r\nfn b() {}\r\n";
+    let result = separate_declarations(source, Edition::Edition2024).unwrap();
+    assert_eq!(result.text, expected);
+    assert_eq!(result.missing_lines, [9, 10]);
+    assert_eq!(format(&result.text), expected);
+}
+
+#[test]
+fn preserves_mixed_gap_styles_and_comment_attachment_after_crlf() {
+    let source = "const S: &str = \"汉\r\n字\"; // trailing\r\n/// Leading doc.\r\nfn café() {}\n#[must_use]\nfn b() {}\r\n";
+    let expected = "const S: &str = \"汉\r\n字\"; // trailing\r\n\r\n/// Leading doc.\r\nfn café() {}\n\n#[must_use]\nfn b() {}\r\n";
+    let result = separate_declarations(source, Edition::Edition2024).unwrap();
+    assert_eq!(result.text, expected);
+    assert_eq!(result.missing_lines, [3, 5]);
+}
+
+#[test]
+fn crlf_skips_preserve_multiline_literals_verbatim() {
+    let source = "#![rustfmt::skip]\r\nconst S: &str = \"a\r\nb\";\r\nfn a() {}\r\nfn b() {}\r\n";
+    let result = separate_declarations(source, Edition::Edition2024).unwrap();
+    assert_eq!(result.text, source);
+    assert_eq!(result.missing_lines, [] as [usize; 0]);
+    assert!(result.skip_reason.is_some());
+}
+
+#[test]
+fn crlf_parse_and_same_line_errors_report_original_locations() {
+    let invalid = "// 汉字\r\nconst S: &str = \"a\r\nb\";\r\nconst BAD: &str = \"汉\\q\";\r\n";
+    let error = separate_declarations(invalid, Edition::Edition2024)
+        .err()
+        .unwrap();
+    assert!(error.contains("4:21:"));
+    let same_line = "// 汉字\r\n// second\r\nfn a() {} fn b() {}\r\n";
+    let error = separate_declarations(same_line, Edition::Edition2024)
+        .err()
+        .unwrap();
+    assert!(error.contains("near line 3;"));
+}

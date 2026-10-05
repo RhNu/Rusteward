@@ -85,6 +85,14 @@ their contents.
 
 ## Pure source analysis
 
+`source::SourceText` prepares a shared parser view for source policies and declaration spacing. It
+borrows inputs without CRLF, otherwise collapses original CRLF pairs once and records each removed
+CR's position in the normalized text. Lone CR characters and literal escape sequences remain
+unchanged. Parser offsets map back to original UTF-8 byte boundaries by counting earlier removals. A
+boundary before a collapsed LF maps before its original CR, so original trivia ranges retain the
+full CRLF pair. Diagnostics and edits use these original boundaries; normalization never rewrites
+authored source.
+
 ### Declaration spacing
 
 `spacing::separate_declarations` consumes already formatted Rust and returns the transformed text,
@@ -99,9 +107,9 @@ before standalone comments or attributes belonging to the next item.
 
 Edits contain only newline insertions. Their offsets are sorted and deduplicated, then applied in
 reverse order to preserve byte offsets. The inserted newline follows the gap's LF or CRLF
-convention. Existing separation is retained, making the transformation idempotent. A required gap
-without a newline is an error because rustfmt is expected to have separated sibling declarations
-first.
+convention, read from the original trivia range rather than the normalized parser token. Existing
+separation is retained, making the transformation idempotent. A required gap without a newline is an
+error because rustfmt is expected to have separated sibling declarations first.
 
 The precise spacing policy and its exceptions are described in the
 [feature reference](features.md#declaration-spacing).
@@ -151,6 +159,9 @@ Each workspace format task reads a source, skips generated files, invokes rustfm
 applies optional declaration spacing, and compares the final text against the original. These tasks
 run through the executor. Differences can become unified diffs, check diagnostics, or staged writes.
 A check observes the complete pipeline without writing authored source files.
+
+The comparison retains exact original and formatted text. Newline-only mismatches receive a specific
+format diagnostic describing the input and output styles; they still fail the check.
 
 All formatting finishes before source writes begin. The workflow re-reads every pending source and
 checks it against the original before any replacement, reporting an explicit conflict if an editor
